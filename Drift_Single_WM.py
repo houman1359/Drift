@@ -111,11 +111,12 @@ def similarity_matching_cost(x, model, C):
 ##############################################################################
 
 
-def Simulate_Drift(X, stdW , stdM, rho, auto, model_WM, input_dim = 10,output_dim = 3):
+
+def Simulate_Drift(X, stdW , stdM, rho, auto, model_WM, input_dim,output_dim):
 
     #input_dim = 10  # Example dimensions
     #output_dim = 3
-    tot_iter = 50000
+    tot_iter = 100000
     #syn_noise_std = 0.2
     learnRate = 0.1
     dt = learnRate
@@ -131,9 +132,15 @@ def Simulate_Drift(X, stdW , stdM, rho, auto, model_WM, input_dim = 10,output_di
     volume_v = np.zeros((time_points-200))
 
     #rho = 0.3 
-    C_target_np = np.array([[1, rho, rho], [rho, 1, rho], [rho, rho, 1]])  # Target correlation matrix
+    #C_target_np = np.array([[1, rho, rho], [rho, 1, rho], [rho, rho, 1]])  # Target correlation matrix
+    #C_target = torch.tensor(C_target_np, dtype=torch.float32)
+    C_target_np = np.full((output_dim, output_dim), rho)
+    noise = np.random.normal(0, 0.1, size=(output_dim, output_dim))
+    noise[np.arange(output_dim), np.arange(output_dim)] = 0  # Zero out diagonal noise
+    C_target_np += noise
+    np.fill_diagonal(C_target_np, 1)
     C_target = torch.tensor(C_target_np, dtype=torch.float32)
-    C_target[~torch.eye(3, dtype=bool)] *= -1  # Only modify non-diagonal elements
+    C_target[~torch.eye(output_dim, dtype=bool)] *= -1  # Only modify non-diagonal elements
 
     #model_WM = SimilarityMatchingNetwork_WM(input_dim, output_dim)
     optimizer_WM = torch.optim.SGD(model_WM.parameters(), lr=learnRate)
@@ -144,7 +151,7 @@ def Simulate_Drift(X, stdW , stdM, rho, auto, model_WM, input_dim = 10,output_di
     for epoch in range(tot_iter):  # Number of epochs
 
         # Randomly select one sample
-        curr_inx = torch.randint(0, num_samples, (100,))
+        curr_inx = torch.randint(0, num_samples, (1,))
         x_curr = X[curr_inx,:]  # Current input sample
         Y_WM = model_WM(x_curr)
 
@@ -207,12 +214,13 @@ def Simulate_Drift(X, stdW , stdM, rho, auto, model_WM, input_dim = 10,output_di
 
 ##############################################################################
 ##############################################################################
-##############################################################################
 #############################  MAIN PART  ####################################
 ##############################################################################
+##############################################################################
+
 input_dim=10
-output_dim=3
-num_samples = 5000
+output_dim=3#3
+num_samples = 10000
 auto = 0
 
 eigenvalues = [4.5, 3.5, 1]  + [0.01] * (input_dim - 3)  # Eigenvalues for the covariance matrix
@@ -223,24 +231,28 @@ model_WM = SimilarityMatchingNetwork_WM(input_dim, output_dim)
 #avg_Ds0 = np.mean(Ds0)
 #print(f"stdW: {0:.2f}, stdM: {0:.2f}, rho: {0:.2f}, Avg Ds: {np.mean(avg_Ds0):.4f}, Volume: {np.mean(volume0):.4f}")
 
-stdWs = np.linspace(0, 0.2, 2)
-stdMs = np.linspace(0, 0.2, 2)
+stdWs = np.linspace(0, 0.01, 2)
+stdMs = np.linspace(0, 0.01 , 2)
 rhos = np.linspace(-0.5, 0.5, 3)
 # Prepare to store the results
-#Ds_results = np.zeros((len(stdWs), len(stdMs), len(rhos)))
-#volume_results = np.zeros_like(Ds_results)
+Ds_results = np.zeros((len(stdWs), len(stdMs), len(rhos)))
+volume_results = np.zeros_like(Ds_results)
 
 for i, stdW in enumerate(stdWs):
     for j, stdM in enumerate(stdMs):
         for k, rho in enumerate(rhos):
             if k == 0 and i == 0 and j == 0:
-                Ds0, volume0, Yt_WM0, model_WM0 =  Simulate_Drift(X, 0, 0, rho, auto, model_WM)
+                Ds0, volume0, Yt_WM0, model_WM0 =  Simulate_Drift(X, 0, 0, rho, auto, model_WM, input_dim,output_dim)
+                Yt_WM_storage = np.zeros((len(stdWs), len(stdMs), len(rhos), Yt_WM0.shape[0], Yt_WM0.shape[1], Yt_WM0.shape[2]))
+            if i == 0 and j == 0:
+                Ds0, volume0, Yt_WM0, model_WM0 =  Simulate_Drift(X, 0, 0, rho, auto, model_WM, input_dim,output_dim)
 
-            Ds, volume, Yt_WM, model_WM =  Simulate_Drift(X, stdW, stdM, rho, auto, model_WM0)
-            #avg_Ds = np.mean(Ds)
-            #Ds_results[i, j, k] = avg_Ds
-            #volume_results[i, j, k] = volume
-            #print(f"stdW: {stdW:.2f}, stdM: {stdM:.2f}, rho: {rho:.2f}, Avg Ds: {avg_Ds:.4f}, Volume: {volume:.4f}")
+            Ds, volume, Yt_WM, model_WM =  Simulate_Drift(X, stdW, stdM, rho, auto, model_WM0, input_dim,output_dim)
+            avg_Ds = np.mean(Ds)
+            Ds_results[i, j, k] = avg_Ds
+            volume_results[i, j, k] = volume
+            print(f"stdW: {stdW:.2f}, stdM: {stdM:.2f}, rho: {rho:.2f}, Avg Ds: {avg_Ds:.4f}, Volume: {volume:.4f}")
+            Yt_WM_storage[i, j, k] = Yt_WM
 
 if 1==1:
 
@@ -252,7 +264,7 @@ if 1==1:
     y_WM_np = Yt_WM[:,:-200,sel_inx]
     # Assuming y is the output from the last epoch
     for i in range(output_dim):
-        plt.plot(y_WM_np[i , :], label=f'Output dimension {i+1}', alpha=0.6)
+        plt.plot(y_WM_np[i , ::20], label=f'Output dimension {i+1}', alpha=0.6)
     plt.show()
     # y_wCw_np = Yt_wCw[:,:-200,selYInx]
     # # Assuming y is the output from the last epoch
