@@ -110,7 +110,7 @@ class PlaceCellNetwork(nn.Module):
             errTrack = torch.cat((err_unsqueezed, errTrack[:4]), dim=0)  # Concatenate along the new dimension
             cumErr = torch.abs(torch.sum(torch.diff(errTrack, dim=0)))
 
-            if err < 1e-3 and cumErr < 1e-6:
+            if err < 1e-4 and cumErr < 1e-7:
                 break
 
             Yold = Y.clone()
@@ -184,7 +184,7 @@ def Simulate_Drift_NL(X, stdW , stdM, rho, auto, model, input_dim, output_dim, l
     C_target = upper_tri_A + upper_tri_A.t() - torch.diag(torch.diag(upper_tri_A))
 
     #model_WM = SimilarityMatchingNetwork_WM(input_dim, output_dim)
-    optimizer_WM = torch.optim.SGD(model.parameters(), lr=dt)
+    optimizer_WM = torch.optim.SGD(model.parameters(), lr=lr)
     DeltaWM_W_manual = torch.nn.Parameter(torch.randn(output_dim, input_dim))
     DeltaWM_M_manual = torch.nn.Parameter(torch.eye(output_dim))
     nn = 0
@@ -213,9 +213,9 @@ def Simulate_Drift_NL(X, stdW , stdM, rho, auto, model, input_dim, output_dim, l
         # c_alpha = 0.0
         # DeltaWM_M_manual = dt * (torch.matmul(Y_WM.t(), Y_WM) / Y_WM.size(0) - model.M- c_alpha * E)+ torch.sqrt(torch.tensor(dt)) * zetas  # y_i y_j - M_ij torch.sqrt(torch.tensor(dt))
 
-        DeltaW = lr * (torch.matmul(Y_WM.t(), x_curr) / x_curr.size(0) - model.W) + torch.sqrt(torch.tensor(dt)) * xis
-        DeltaM = lr * (torch.matmul(Y_WM.t(), Y_WM) / Y_WM.size(0) - model.M) + torch.sqrt(torch.tensor(dt)) * zetas
-        Deltab = lr * (alpha * torch.mean(Y_WM, dim=0) - model.b) + torch.sqrt(torch.tensor(dt)) * xi_b
+        DeltaW = lr * (torch.matmul(Y_WM.t(), x_curr) / x_curr.size(0) - model.W) + torch.sqrt(torch.tensor(lr)) * xis
+        DeltaM = lr * (torch.matmul(Y_WM.t(), Y_WM) / Y_WM.size(0) - model.M) + torch.sqrt(torch.tensor(lr)) * zetas
+        Deltab = lr * (np.sqrt(alpha) * torch.mean(Y_WM, dim=0) - model.b) + torch.sqrt(torch.tensor(lr)) * xi_b
 
         # DeltaW = torch.where(torch.isinf(DeltaW), torch.tensor(0.0), DeltaW)
         # DeltaM = torch.where(torch.isinf(DeltaM), torch.tensor(0.0), DeltaM)
@@ -273,10 +273,10 @@ def Simulate_Drift_NL(X, stdW , stdM, rho, auto, model, input_dim, output_dim, l
 ##############################################################################
 
 input_dim = 5#3  # Example input dimension
-output_dim = 20  # Example output dimension
+output_dim = 10  # Example output dimension
 tot_iter = 10000  # Maximum iterations
 dt = 0.05
-lr = 0.2
+lr = 0.1
 num_samples = 10000
 stdW = 0
 stdM = 0
@@ -302,7 +302,6 @@ rho = 0.0
 # C_target = upper_tri_A + upper_tri_A.t() - torch.diag(torch.diag(upper_tri_A))
 
 Ds0, entropy0, Similarity0, Yt_WM0, model_WM0 =  Simulate_Drift_NL(X, stdW, stdM, rho, auto, model, input_dim,output_dim, lr, alpha, beta_1, beta_2)
-
 
 # M = model_WM0.M
 # C = C_target
@@ -333,8 +332,8 @@ Ds0, entropy0, Similarity0, Yt_WM0, model_WM0 =  Simulate_Drift_NL(X, stdW, stdM
 #avg_Ds0 = np.mean(Ds0)
 #print(f"stdW: {0:.2f}, stdM: {0:.2f}, rho: {0:.2f}, Avg Ds: {np.mean(avg_Ds0):.4f}, Volume: {np.mean(volume0):.4f}")
 
-stdWs = np.linspace(0, 0.01, 3)
-stdMs = np.linspace(0, 0.01 , 3)
+stdWs = np.linspace(0, 0.05, 5)
+stdMs = np.linspace(0, 0.05 , 5)
 rhos = np.linspace(-0.1, 0.1, 3)
 # Prepare to store the results
 #Ds_results = np.zeros((len(stdWs), len(stdMs), len(rhos)))
