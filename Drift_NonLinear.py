@@ -10,6 +10,8 @@ import sys
 from scipy.spatial import ConvexHull, qhull
 from scipy.stats import entropy
 from IPython.display import display, clear_output
+import time
+
 
 ##############################################################################
 ##############################################################################
@@ -194,6 +196,7 @@ def Simulate_Drift_NL(X, stdW , stdM, rho, batch_size, model, input_dim, output_
 
     for epoch in range(tot_iter):  # Number of epochs
 
+        start_time = time.time()
         # Randomly select one sample
         curr_inx = torch.randint(0, num_samples, (batch_size,)) #torch.tensor([1])
         x_curr = X[curr_inx,:] 
@@ -262,15 +265,13 @@ def Simulate_Drift_NL(X, stdW , stdM, rho, batch_size, model, input_dim, output_
         # plt.draw
 
         if epoch % 1000 == 0:
-        #     cost_WM = similarity_matching_cost(x_curr, model, C_target, alpha, beta_1, beta_2)
-            #print(f'Epoch {epoch}, Cost: {cost_WM.item()}')
-            print(f'Epoch {epoch}')
+            cost_WM = similarity_matching_cost(x_curr, model, C_target, alpha, beta_1, beta_2)
+            print(f'Epoch {epoch}, Cost: {cost_WM.item()}')
+            end_time=time.time()
+            elapsed_time = end_time - start_time
+            print(f"Iteration {i+1}: {elapsed_time:.6f} seconds")
 
-    y=model(X)
-    print(y.shape)
-    yx =y.detach()
-    Yt_WM[:,nn,:] = yx.t()
-    nn += 1
+
 
     for inn in range(Yt_WM.shape[2]):
         selYInx = inn#100  # np.random.choice(range(num_sel), 1, replace=False)
