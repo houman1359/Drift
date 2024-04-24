@@ -257,7 +257,7 @@ def Simulate_Drift_NL(X, stdW , stdM, rho, auto, model, input_dim, output_dim, l
             print(f'Epoch {epoch}, Cost: {cost_WM.item()}')
             end_time=time.time()
             elapsed_time = end_time - start_time
-            print(f"Iteration {i+1}: {elapsed_time:.6f} seconds")
+            print(f"Iteration {epoch}: {elapsed_time:.6f} seconds")
 
 
 
