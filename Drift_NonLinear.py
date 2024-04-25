@@ -12,7 +12,7 @@ from scipy.stats import entropy
 from IPython.display import display, clear_output
 import time 
 
-# O2 branch
+# O2 branch rr
 
 # Check if CUDA is available and set the default tensor type
 if torch.cuda.is_available():
@@ -193,12 +193,11 @@ def Simulate_Drift_NL(X, stdW , stdM, rho, auto, model, input_dim, output_dim, l
     DeltaWM_M_manual = torch.nn.Parameter(torch.eye(output_dim).to(device))
     nn = 0
 
-    
     #fig, ax = plt.subplots()    
-
+    start_time = time.time()
     for epoch in range(tot_iter):  # Number of epochs
 
-        if epoch % 1000 ==0:
+        if epoch % 1000 ==1:
             start_time = time.time()
         # Randomly select one sample
         curr_inx = torch.randint(0, num_samples, (500,), device=device) #torch.tensor([1])
@@ -272,13 +271,19 @@ def Simulate_Drift_NL(X, stdW , stdM, rho, auto, model, input_dim, output_dim, l
         #volume_v[inn] = estimate_volume_convex_hull(y_WM_np.T)
         volume_v[inn] = compute_entropy_from_histogram(y_WM_np)
         y_WM_np_cpu = y_WM_np.cpu().numpy()
-        Similarity[inn, :, :] = np.matmul(y_WM_np_cpu, y_WM_np_cpu.T)
+        similarity_matrix_np = np.matmul(y_WM_np_cpu, y_WM_np_cpu.T)
+        similarity_matrix_tensor = torch.from_numpy(similarity_matrix_np).to(device)  # Convert numpy array to tensor and move to GPU
 
-    Ds = np.mean(Ds_v,axis=0)
-    entrop = np.mean(volume_v,axis=0)
+        Similarity[inn, :, :] = similarity_matrix_tensor  # Assign the tensor, which is now on the correct device
+
+    #Ds = np.mean(Ds_v,axis=0)
+    #Ds = Ds_v.mean().item()  # Compute the mean using PyTorch and convert to Python scalar
+    #entrop = np.mean(volume_v,axis=0)
+    Ds_mean = Ds_v.mean()
+    volume_mean = volume_v.mean()
 
     #return Ds, entrop, Similarity, Yt_WM, model
-    return Ds_v.mean().item(), volume_v.mean().item(), Similarity, Yt_WM, model
+    return Ds_mean, volume_mean, Similarity, Yt_WM, model
 
 ##############################################################################
 ##############################################################################
@@ -373,7 +378,7 @@ for i, stdW in enumerate(stdWs):
         rho = 0.0
         Ds, ent, Simil, Yt_WM, model =  Simulate_Drift_NL(X, stdW, stdM, rho, auto, model_WM0, input_dim, output_dim, dt, alpha, beta_1, beta_2)
 
-        avg_Ds = np.mean(Ds)
+        avg_Ds = Ds
         Ds_results[i, j] = avg_Ds
         entropy_results[i, j] = ent
         Similarity_results[i, j,:,:,:] = Simil
