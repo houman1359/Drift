@@ -57,17 +57,18 @@ def compute_diffusion_constants(Y, plot=False):
     
     return Dsm
 
-def compute_entropy_from_histogram(distances, bins='auto'):
 
+
+def compute_entropy_from_histogram(distances, bins='auto'):
     y = np.zeros(distances.shape[0])
 
-    for i in range(distances.shape[0]):  
-        hist, _ = np.histogram(distances[i,:], bins=bins, density=True)
+    for i in range(distances.shape[0]):
+        # Ensure the tensor is moved to the CPU and converted to NumPy before processing with np.histogram
+        hist, _ = np.histogram(distances[i, :].cpu().numpy(), bins=bins, density=True)
         prob_dist = hist / np.sum(hist)
-        y[i]=entropy(prob_dist)
+        y[i] = entropy(prob_dist)
 
     return np.mean(y)
-
 ##############################################################################
 ##############################################################################
 
@@ -264,14 +265,14 @@ def Simulate_Drift_NL(X, stdW , stdM, rho, auto, model, input_dim, output_dim, l
             print(f"Iteration {epoch}: {elapsed_time:.6f} seconds")
 
 
-
     for inn in range(Yt_WM.shape[2]):
         selYInx = inn#100  # np.random.choice(range(num_sel), 1, replace=False)
         y_WM_np = Yt_WM[:,100:-200,selYInx]
         Ds_v[inn] = 0#compute_diffusion_constants(y_WM_np, plot=False)
         #volume_v[inn] = estimate_volume_convex_hull(y_WM_np.T)
         volume_v[inn] = compute_entropy_from_histogram(y_WM_np)
-        Similarity[inn,:,:] = np.matmul(y_WM_np, y_WM_np.T)
+        y_WM_np_cpu = y_WM_np.cpu().numpy()
+        Similarity[inn, :, :] = np.matmul(y_WM_np_cpu, y_WM_np_cpu.T)
 
     Ds = np.mean(Ds_v,axis=0)
     entrop = np.mean(volume_v,axis=0)
