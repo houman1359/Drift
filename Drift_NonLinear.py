@@ -96,9 +96,13 @@ class PlaceCellNetwork(nn.Module):
         cumErr = float('inf')
         errTrack = torch.rand(5, 1)
         self.M_off_diag = self.M - torch.diag(torch.diag(self.M))
-
+        if torch.cuda.is_available():
+            self.to(torch.device('cuda'))
+        
     def forward(self, X):
         device = X.device
+        print(device)
+        
         batch_size = X.size(0)  # Correctly define batch_size based on the first dimension of X
         Y = torch.zeros(X.size(0), self.W.size(0), device=device)
         Yold = Y.clone()
