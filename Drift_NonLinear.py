@@ -197,9 +197,11 @@ def Simulate_Drift_NL(X, stdW , stdM, rho, auto, model, input_dim, output_dim, l
 
     #model_WM = SimilarityMatchingNetwork_WM(input_dim, output_dim)
     optimizer_WM = torch.optim.SGD(model.parameters(), lr=lr)
-    DeltaWM_W_manual = torch.nn.Parameter(torch.randn(output_dim, input_dim))
-    DeltaWM_M_manual = torch.nn.Parameter(torch.eye(output_dim))
+    DeltaWM_W_manual = torch.nn.Parameter(torch.randn(output_dim, input_dim).to(device))
+    DeltaWM_M_manual = torch.nn.Parameter(torch.eye(output_dim).to(device))
     nn = 0
+    X = X.to(device)
+    model.to(device)
     
     #fig, ax = plt.subplots()    
 
