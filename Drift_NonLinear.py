@@ -12,7 +12,7 @@ from scipy.stats import entropy
 from IPython.display import display, clear_output
 import time 
 
-# O2 branch
+# O2 branch rr
 
 # Check if CUDA is available and set the default tensor type
 if torch.cuda.is_available():
