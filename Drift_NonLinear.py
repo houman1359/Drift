@@ -14,6 +14,15 @@ import time
 
 # O2 branch
 
+# Check if CUDA is available and set the default tensor type
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+    print("Using CUDA on GPU")
+else:
+    device = torch.device("cpu")
+    print("CUDA not available, using CPU")
+
+
 ##############################################################################
 ##############################################################################
 
@@ -76,9 +85,9 @@ def generate_PSP_input_torch(input_cov_eigens, input_dim, num_samples):
 class PlaceCellNetwork(nn.Module):
     def __init__(self, input_dim, output_dim, MaxIter, dt, alpha = 0.0, lbd1 = 0.0, lbd2 = 0.0):
         super(PlaceCellNetwork, self).__init__()
-        self.W = nn.Parameter(torch.randn(output_dim, input_dim))
-        self.M = nn.Parameter(torch.eye(output_dim))
-        self.b = nn.Parameter(torch.zeros(output_dim))
+        self.W = nn.Parameter(torch.randn(output_dim, input_dim).to(device))
+        self.M = nn.Parameter(torch.eye(output_dim).to(device))
+        self.b = nn.Parameter(torch.zeros(output_dim).to(device))
         self.MaxIter = MaxIter
         self.dt = dt
         self.alpha = alpha
@@ -188,9 +197,11 @@ def Simulate_Drift_NL(X, stdW , stdM, rho, auto, model, input_dim, output_dim, l
 
     #model_WM = SimilarityMatchingNetwork_WM(input_dim, output_dim)
     optimizer_WM = torch.optim.SGD(model.parameters(), lr=lr)
-    DeltaWM_W_manual = torch.nn.Parameter(torch.randn(output_dim, input_dim))
-    DeltaWM_M_manual = torch.nn.Parameter(torch.eye(output_dim))
+    DeltaWM_W_manual = torch.nn.Parameter(torch.randn(output_dim, input_dim).to(device))
+    DeltaWM_M_manual = torch.nn.Parameter(torch.eye(output_dim).to(device))
     nn = 0
+    X = X.to(device)
+    model.to(device)
     
     #fig, ax = plt.subplots()    
 
