@@ -391,7 +391,8 @@ for i, stdW in enumerate(stdWs):
             for ii in range(output_dim):
                 plt.plot(y_WM_np[ii, ::20], label=f'Output dimension {ii+1}', alpha=0.6)
             plt.legend()
-            plt.show()
+            plt.show(block=False)
+
 
 
 if 1==2:
