@@ -84,7 +84,7 @@ def generate_PSP_input_torch(input_cov_eigens, input_dim, num_samples):
 ###  1- dimensionality  2- conjunctiveness 3- feedforward corr vs recurrent corr.
 
 class PlaceCellNetwork(nn.Module):
-    def __init__(self, input_dim, output_dim, MaxIter, dt, device, alpha=0.0, lbd1=0.0, lbd2=0.0):
+    def __init__(self, input_dim, output_dim, MaxIter, dt, alpha=0.0, lbd1=0.0, lbd2=0.0):
         super(PlaceCellNetwork, self).__init__()
         #self.device = device  # Define the device where the parameters will be stored
         self.W = nn.Parameter(torch.randn(output_dim, input_dim, device=device))
@@ -102,61 +102,24 @@ class PlaceCellNetwork(nn.Module):
         batch_size = X.size(0)
         Y = torch.zeros(batch_size, self.W.size(0), device=self.W.device)
         Yold = Y.clone()
-        diag_M = torch.diag_embed(torch.diag(self.M))  # Correct use of torch.diag_embed
+        diag_M = torch.diag(self.M)  # Correct use of torch.diag_embed
         Wx = torch.mm(X, self.W.t())  # Use matrix multiplication correctly
-        MO = self.M.t() - diag_M
+        MO = self.M - torch.diag_embed(diag_M)
 
         for count in range(self.MaxIter):
             M_Y = torch.mm(Yold, MO)
             dt = self.dt  # Time step might be adaptive based on some criterion, simplifying here
             du = -Yold + Wx - np.sqrt(self.alpha) * self.b - M_Y
             uy = Y + dt * du
-            Y = torch.maximum(uy - self.lbd1, torch.zeros_like(uy)) / (self.lbd2 + torch.diag(self.M).unsqueeze(0))
+            Y = torch.maximum(uy - self.lbd1, torch.zeros_like(uy)) / (self.lbd2 + diag_M)
 
-            err = torch.norm(Y - Yold) / (torch.norm(Yold) + 1e-10)
+            err = torch.norm(Y - Yold) / (torch.norm(Yold) + 1e-10) / dt
             if err.item() < 1e-4:
                 break
             Yold = Y.clone()
 
         return Y
-
-class PlaceCellNetworkold(nn.Module):
-    def __init__(self, input_dim, output_dim, MaxIter, dt, alpha=0.0, lbd1=0.0, lbd2=0.0):
-        super(PlaceCellNetwork, self).__init__()
-        self.W = nn.Parameter(torch.randn(output_dim, input_dim, device=device))
-        self.M = nn.Parameter(torch.eye(output_dim, device=device))
-        self.b = nn.Parameter(torch.zeros(output_dim, device=device))
-        self.MaxIter = MaxIter
-        self.dt = dt
-        self.alpha = alpha
-        self.lbd1 = lbd1
-        self.lbd2 = lbd2
-        self.errTrack = torch.rand(5, 1, device=device)  # Store on the correct device
-
-    def forward(self, X):
-        X = X.to(self.W.device)  # Ensure input is on the same device as model parameters
-        batch_size = X.size(0)
-        Y = torch.zeros(batch_size, self.W.size(0), device=self.W.device)
-        Yold = Y.clone()
-        diag_M = torch.diag(self.M)
-        Wx = torch.mm(X, self.W.t())  # Use matrix multiplication correctly
-        MO = self.M.t() - diag_M
-        uy = Y
-
-        for count in range(self.MaxIter):
-            #M_Y = torch.mm(Yold, self.M.t())  # Ensure proper matrix multiplication
-            M_Y = torch.mm(Yold, MO)  # Ensure proper matrix multiplication
-            dt = self.dt#max(self.dt / (1 + count / 10), 1e-3)
-            du = -Yold + Wx - np.sqrt(self.alpha) * self.b - M_Y
-            uy += dt * du  # Updated incrementally
-            Y = torch.maximum(uy - self.lbd1, torch.zeros_like(Y)) / (self.lbd2 + diag_M)
-
-            err = torch.norm(Y - Yold) / (torch.norm(Yold) + 1e-10) / dt
-            if err.item() < 1e-4:  # Use item() to extract the scalar value
-                break
-            Yold = Y.clone()
-
-        return Y
+### o2
 
 ##############################################################################
 ##############################################################################
