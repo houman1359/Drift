@@ -87,20 +87,20 @@ class PlaceCellNetwork(nn.Module):
     def __init__(self, input_dim, output_dim, MaxIter, dt, device, alpha=0.0, lbd1=0.0, lbd2=0.0):
         super(PlaceCellNetwork, self).__init__()
         self.device = device  # Define the device where the parameters will be stored
-        self.W = nn.Parameter(torch.randn(output_dim, input_dim).to(device))
-        self.M = nn.Parameter(torch.eye(output_dim).to(device))
-        self.b = nn.Parameter(torch.zeros(output_dim).to(device))
+        self.W = nn.Parameter(torch.randn(output_dim, input_dim, device=device))
+        self.M = nn.Parameter(torch.eye(output_dim, device=device))
+        self.b = nn.Parameter(torch.zeros(output_dim, device=device))
         self.MaxIter = MaxIter
         self.dt = dt
         self.alpha = alpha
         self.lbd1 = lbd1
         self.lbd2 = lbd2
-        self.errTrack = torch.rand(5, 1).to(device)  # Store on the correct device
+        self.errTrack = torch.rand(5, 1, device=device)  # Store on the correct device
 
     def forward(self, X):
-        X = X.to(self.device)  # Ensure input is on the same device as model parameters
+        X = X.to(self.W.device)  # Ensure input is on the same device as model parameters
         batch_size = X.size(0)
-        Y = torch.zeros(batch_size, self.W.size(0), device=self.device)
+        Y = torch.zeros(batch_size, self.W.size(0), device=self.W.device)
         Yold = Y.clone()
         diag_M = torch.diag_embed(torch.diag(self.M))  # Correct use of torch.diag_embed
         Wx = torch.mm(X, self.W.t())  # Use matrix multiplication correctly
