@@ -11,6 +11,7 @@ from scipy.spatial import ConvexHull, qhull
 from scipy.stats import entropy
 from IPython.display import display, clear_output
 import time 
+import pdb
 
 # O2 branch v426
 
@@ -21,7 +22,6 @@ if torch.cuda.is_available():
 else:
     device = torch.device("cpu")
     print("CUDA not available, using CPU")
-
 
 ##############################################################################
 ##############################################################################
@@ -57,8 +57,6 @@ def compute_diffusion_constants(Y, plot=False):
     
     return Dsm
 
-
-
 def compute_entropy_from_histogram(distances, bins='auto'):
     y = np.zeros(distances.shape[0])
 
@@ -69,6 +67,7 @@ def compute_entropy_from_histogram(distances, bins='auto'):
         y[i] = entropy(prob_dist)
 
     return np.mean(y)
+
 ##############################################################################
 ##############################################################################
 
@@ -85,6 +84,43 @@ def generate_PSP_input_torch(input_cov_eigens, input_dim, num_samples):
 ###  1- dimensionality  2- conjunctiveness 3- feedforward corr vs recurrent corr.
 
 class PlaceCellNetwork(nn.Module):
+    def __init__(self, input_dim, output_dim, MaxIter, dt, device, alpha=0.0, lbd1=0.0, lbd2=0.0):
+        super(PlaceCellNetwork, self).__init__()
+        self.device = device  # Define the device where the parameters will be stored
+        self.W = nn.Parameter(torch.randn(output_dim, input_dim).to(device))
+        self.M = nn.Parameter(torch.eye(output_dim).to(device))
+        self.b = nn.Parameter(torch.zeros(output_dim).to(device))
+        self.MaxIter = MaxIter
+        self.dt = dt
+        self.alpha = alpha
+        self.lbd1 = lbd1
+        self.lbd2 = lbd2
+        self.errTrack = torch.rand(5, 1).to(device)  # Store on the correct device
+
+    def forward(self, X):
+        X = X.to(self.device)  # Ensure input is on the same device as model parameters
+        batch_size = X.size(0)
+        Y = torch.zeros(batch_size, self.W.size(0), device=self.device)
+        Yold = Y.clone()
+        diag_M = torch.diag_embed(torch.diag(self.M))  # Correct use of torch.diag_embed
+        Wx = torch.mm(X, self.W.t())  # Use matrix multiplication correctly
+        MO = self.M - diag_M
+
+        for count in range(self.MaxIter):
+            M_Y = torch.mm(Yold, MO)
+            dt = self.dt  # Time step might be adaptive based on some criterion, simplifying here
+            du = -Yold + Wx - np.sqrt(self.alpha) * self.b - M_Y
+            uy = Y + dt * du
+            Y = torch.maximum(uy - self.lbd1, torch.zeros_like(uy)) / (self.lbd2 + torch.diag(self.M).unsqueeze(0))
+
+            err = torch.norm(Y - Yold) / (torch.norm(Yold) + 1e-10)
+            if err < 1e-4:
+                break
+            Yold = Y.clone()
+
+        return Y
+
+class PlaceCellNetworkold(nn.Module):
     def __init__(self, input_dim, output_dim, MaxIter, dt, alpha=0.0, lbd1=0.0, lbd2=0.0):
         super(PlaceCellNetwork, self).__init__()
         self.W = nn.Parameter(torch.randn(output_dim, input_dim, device=device))
@@ -104,10 +140,12 @@ class PlaceCellNetwork(nn.Module):
         Yold = Y.clone()
         diag_M = torch.diag(self.M)
         Wx = torch.mm(X, self.W.t())  # Use matrix multiplication correctly
+        MO = self.M.t() - diag_M
 
         for count in range(self.MaxIter):
-            M_Y = torch.mm(Yold, self.M.t())  # Ensure proper matrix multiplication
-            dt = max(self.dt / (1 + count / 10), 1e-2)
+            #M_Y = torch.mm(Yold, self.M.t())  # Ensure proper matrix multiplication
+            M_Y = torch.mm(Yold, MO)  # Ensure proper matrix multiplication
+            dt = self.dt#max(self.dt / (1 + count / 10), 1e-3)
             du = -Yold + Wx - np.sqrt(self.alpha) * self.b - M_Y
             Y += dt * du  # Updated incrementally
             Y = torch.maximum(Y - self.lbd1, torch.zeros_like(Y)) / (self.lbd2 + diag_M)
@@ -118,7 +156,6 @@ class PlaceCellNetwork(nn.Module):
             Yold = Y.clone()
 
         return Y
-
 
 ##############################################################################
 ##############################################################################
@@ -160,9 +197,12 @@ def similarity_matching_cost(x, model, C, alpha=0.0, beta_1=0.0, beta_2=0.0):
 ##############################################################################
 
 def Simulate_Drift_NL(X, stdW , stdM, rho, auto, model, input_dim, output_dim, lr, alpha=0.0, beta_1=0.0, beta_2=0.0):
-    
+
     X = X.to(device)
     model.to(device)
+
+    plt.ion()  # Turn on interactive plotting
+    fig, ax = plt.subplots()  # Create a figure and axes object
 
     #stdW = syn_noise_std
     #stdM = syn_noise_std
@@ -199,8 +239,14 @@ def Simulate_Drift_NL(X, stdW , stdM, rho, auto, model, input_dim, output_dim, l
 
         if epoch % 1000 ==1:
             start_time = time.time()
+            #ax.clear()  # Clear the axes to update the plot
+            #ax.plot(model.W[:,1].detach().cpu().numpy(), model.W[:,2].detach().cpu().numpy(), 'b.')  # 'b.' plots a blue dot
+            #plt.draw()  # Redraw the current figure
+            #plt.pause(1)  # Pause for a bit to see the update
+            #pdb.set_trace()  # Execution will pause here
+
         # Randomly select one sample
-        curr_inx = torch.randint(0, num_samples, (500,), device=device) #torch.tensor([1])
+        curr_inx = torch.randint(0, num_samples, (100,), device=device) #torch.tensor([1])
         x_curr = X[curr_inx,:].to(device)  # Current input sample
         Y_WM = model(x_curr)
 
@@ -223,6 +269,8 @@ def Simulate_Drift_NL(X, stdW , stdM, rho, auto, model, input_dim, output_dim, l
         DeltaW = lr * (torch.matmul(Y_WM.t(), x_curr) / x_curr.size(0) - model.W) + torch.sqrt(torch.tensor(lr)) * xis
         DeltaM = lr * (torch.matmul(Y_WM.t(), Y_WM) / Y_WM.size(0) - model.M) + torch.sqrt(torch.tensor(lr)) * zetas
         Deltab = lr * (np.sqrt(alpha) * torch.mean(Y_WM, dim=0) - model.b) + torch.sqrt(torch.tensor(lr)) * xi_b
+            
+        #pdb.set_trace()  # Execution will pause here
 
         # DeltaW = torch.where(torch.isinf(DeltaW), torch.tensor(0.0), DeltaW)
         # DeltaM = torch.where(torch.isinf(DeltaM), torch.tensor(0.0), DeltaM)
@@ -291,19 +339,22 @@ def Simulate_Drift_NL(X, stdW , stdM, rho, auto, model, input_dim, output_dim, l
 ##############################################################################
 ##############################################################################
 
-input_dim = 3#3  # Example input dimension
-output_dim = 5  # Example output dimension
+input_dim = 5#3  # Example input dimension
+output_dim = 10  # Example output dimension
 tot_iter = 10000  # Maximum iterations
 dt = 0.05
-lr = 0.1
+lr = 0.01
 num_samples = 10000
 stdW = 0
 stdM = 0
-alpha = 0.5
+alpha = 1
 beta_1 = 0.005
 beta_2 = 0.005
 model = PlaceCellNetwork(input_dim, output_dim, tot_iter, dt, alpha, beta_1, beta_2)
 X = torch.randn(num_samples, input_dim-1, device=device)  # Example input data
+X[:,0]+=1
+X[:,1]+=2
+
 binary_variable = torch.randint(0, 2, (num_samples, 1), device=device)
 X = torch.cat((X, binary_variable), dim=1)
 Y = model(X)  # Apply the forward pass
@@ -321,7 +372,7 @@ rho = 0.0
 # C_target = upper_tri_A + upper_tri_A.t() - torch.diag(torch.diag(upper_tri_A))
 
 
-
+ 
 Ds0, entropy0, Similarity0, Yt_WM0, model_WM0 =  Simulate_Drift_NL(X, stdW, stdM, rho, auto, model, input_dim,output_dim, lr, alpha, beta_1, beta_2)
 
 # M = model_WM0.M
@@ -354,8 +405,8 @@ Ds0, entropy0, Similarity0, Yt_WM0, model_WM0 =  Simulate_Drift_NL(X, stdW, stdM
 #print(f"stdW: {0:.2f}, stdM: {0:.2f}, rho: {0:.2f}, Avg Ds: {np.mean(avg_Ds0):.4f}, Volume: {np.mean(volume0):.4f}")
 
 
-stdWs = torch.linspace(0, 0.05, 5, device=device)
-stdMs = torch.linspace(0, 0.05, 5, device=device)
+stdWs = torch.linspace(0, 0.00005, 5, device=device)
+stdMs = torch.linspace(0, 0.00005, 5, device=device)
 rhos = torch.linspace(-0.1, 0.1, 3, device=device)
 
 
