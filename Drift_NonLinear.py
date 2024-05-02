@@ -83,7 +83,7 @@ def generate_PSP_input_torch(input_cov_eigens, input_dim, num_samples):
 
 ###  1- dimensionality  2- conjunctiveness 3- feedforward corr vs recurrent corr.
 
-class PlaceCellNetwork(nn.Module):
+class PlaceCellNetworkj(nn.Module):
     def __init__(self, input_dim, output_dim, MaxIter, dt, device, alpha=0.0, lbd1=0.0, lbd2=0.0):
         super(PlaceCellNetwork, self).__init__()
         self.device = device  # Define the device where the parameters will be stored
@@ -111,7 +111,7 @@ class PlaceCellNetwork(nn.Module):
             dt = self.dt  # Time step might be adaptive based on some criterion, simplifying here
             du = -Yold + Wx - np.sqrt(self.alpha) * self.b - M_Y
             uy = Y + dt * du
-            Y = torch.maximum(uy - self.lbd1, torch.zeros_like(uy)) / (self.lbd2 + torch.diag(self.M).unsqueeze(0))
+            Y = torch.maximum(uy - self.lbd1, torch.zeros_like(uy)) / (self.lbd2 + diag_M)
 
             err = torch.norm(Y - Yold) / (torch.norm(Yold) + 1e-10)
             if err < 1e-4:
@@ -120,7 +120,7 @@ class PlaceCellNetwork(nn.Module):
 
         return Y
 
-class PlaceCellNetworkold(nn.Module):
+class PlaceCellNetwork(nn.Module):
     def __init__(self, input_dim, output_dim, MaxIter, dt, alpha=0.0, lbd1=0.0, lbd2=0.0):
         super(PlaceCellNetwork, self).__init__()
         self.W = nn.Parameter(torch.randn(output_dim, input_dim, device=device))
