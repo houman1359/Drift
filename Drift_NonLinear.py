@@ -86,7 +86,7 @@ def generate_PSP_input_torch(input_cov_eigens, input_dim, num_samples):
 class PlaceCellNetwork(nn.Module):
     def __init__(self, input_dim, output_dim, MaxIter, dt, device, alpha=0.0, lbd1=0.0, lbd2=0.0):
         super(PlaceCellNetwork, self).__init__()
-        self.device = device  # Define the device where the parameters will be stored
+        #self.device = device  # Define the device where the parameters will be stored
         self.W = nn.Parameter(torch.randn(output_dim, input_dim, device=device))
         self.M = nn.Parameter(torch.eye(output_dim, device=device))
         self.b = nn.Parameter(torch.zeros(output_dim, device=device))
@@ -104,7 +104,7 @@ class PlaceCellNetwork(nn.Module):
         Yold = Y.clone()
         diag_M = torch.diag_embed(torch.diag(self.M))  # Correct use of torch.diag_embed
         Wx = torch.mm(X, self.W.t())  # Use matrix multiplication correctly
-        MO = self.M - diag_M
+        MO = self.M.t() - diag_M
 
         for count in range(self.MaxIter):
             M_Y = torch.mm(Yold, MO)
@@ -114,7 +114,7 @@ class PlaceCellNetwork(nn.Module):
             Y = torch.maximum(uy - self.lbd1, torch.zeros_like(uy)) / (self.lbd2 + torch.diag(self.M).unsqueeze(0))
 
             err = torch.norm(Y - Yold) / (torch.norm(Yold) + 1e-10)
-            if err < 1e-4:
+            if err.item() < 1e-4:
                 break
             Yold = Y.clone()
 
@@ -141,14 +141,15 @@ class PlaceCellNetworkold(nn.Module):
         diag_M = torch.diag(self.M)
         Wx = torch.mm(X, self.W.t())  # Use matrix multiplication correctly
         MO = self.M.t() - diag_M
+        uy = Y
 
         for count in range(self.MaxIter):
             #M_Y = torch.mm(Yold, self.M.t())  # Ensure proper matrix multiplication
             M_Y = torch.mm(Yold, MO)  # Ensure proper matrix multiplication
             dt = self.dt#max(self.dt / (1 + count / 10), 1e-3)
             du = -Yold + Wx - np.sqrt(self.alpha) * self.b - M_Y
-            Y += dt * du  # Updated incrementally
-            Y = torch.maximum(Y - self.lbd1, torch.zeros_like(Y)) / (self.lbd2 + diag_M)
+            uy += dt * du  # Updated incrementally
+            Y = torch.maximum(uy - self.lbd1, torch.zeros_like(Y)) / (self.lbd2 + diag_M)
 
             err = torch.norm(Y - Yold) / (torch.norm(Yold) + 1e-10) / dt
             if err.item() < 1e-4:  # Use item() to extract the scalar value
