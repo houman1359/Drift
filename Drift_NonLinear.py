@@ -13,7 +13,7 @@ from IPython.display import display, clear_output
 import time 
 import pdb
 
-# O2 branch v426
+# OneDrive branch v0504
 
 # Check if CUDA is available and set the default tensor type
 if torch.cuda.is_available():
@@ -80,87 +80,67 @@ def generate_PSP_input_torch(input_cov_eigens, input_dim, num_samples):
 
 ##############################################################################
 ##############################################################################
-
 ###  1- dimensionality  2- conjunctiveness 3- feedforward corr vs recurrent corr.
 
 class PlaceCellNetwork(nn.Module):
-    def __init__(self, input_dim, output_dim, MaxIter, dt, alpha=0.0, lbd1=0.0, lbd2=0.0):
+    def __init__(self, input_dim, output_dim, MaxIter, dt,  model_type='linear', alpha=0.0,  lbd1=0.0, lbd2=0.0):
         super(PlaceCellNetwork, self).__init__()
-        self.W = nn.Parameter(torch.randn(output_dim, input_dim, device=device))
-        self.M = nn.Parameter(torch.eye(output_dim, device=device))
-        self.b = nn.Parameter(torch.zeros(output_dim, device=device))
+        self.W = nn.Parameter(torch.randn(output_dim, input_dim, device=device))/1000
+        self.M = nn.Parameter(torch.eye(output_dim, device=device))/1000
+        
+        if model_type == 'nonlinear':
+            self.b = nn.Parameter(torch.zeros(output_dim, device=device))
+            self.alpha = torch.tensor(alpha, dtype=torch.float32)  # Only used in nonlinear mode
+            self.lbd1 = lbd1
+            self.lbd2 = lbd2
+            self.reciprocal_diag_M = 1 / (self.lbd2 + torch.diag(self.M))  # Precompute the reciprocal if possible
+
+        else:
+            self.b = None
+            self.alpha = None
+            self.lbd1 = None
+            self.lbd2 = None
+            self.reciprocal_diag_M = None
+
         self.MaxIter = MaxIter
         self.dt = dt
-        self.alpha = alpha
-        self.lbd1 = lbd1
-        self.lbd2 = lbd2
         self.errTrack = torch.rand(5, 1, device=device)  # Store on the correct device
+        self.diag_M = torch.diag(self.M)  # Correct use of torch.diag_embed
+        self.model_type = model_type
 
     def forward(self, X):
         X = X.to(self.W.device)  # Ensure input is on the same device as model parameters
         batch_size = X.size(0)
         Y = torch.zeros(batch_size, self.W.size(0), device=self.W.device)
         Yold = Y.clone()
-        
-        # Precompute outside the loop
-        diag_M = torch.diag(self.M)  # Correct use of torch.diag_embed
         Wx = torch.mm(X, self.W.t())  # Precompute matrix multiplication
-        
-        # Precompute M without diagonal elements
-        MO = self.M - torch.diag_embed(diag_M)
+        MO = self.M - torch.diag_embed(self.diag_M)
 
-        for count in range(self.MaxIter):
-            M_Y = torch.mm(Yold, MO)
-            dt = self.dt  # Time step might be adaptive based on some criterion, simplifying here
-            du = -Yold + Wx - np.sqrt(self.alpha) * self.b - M_Y
-            uy = Y + dt * du
-            Y = torch.maximum(uy - self.lbd1, torch.zeros_like(uy)) / (self.lbd2 + diag_M)
+        if self.model_type == 'linear':
+            Wx = torch.mm(X, self.W.t())
+            Y = torch.mm(Wx, torch.inverse(self.M))
+        else:
+            for count in range(self.MaxIter):
+                M_Y = torch.mm(Yold, MO)
+                dt = self.dt  # Time step might be adaptive based on some criterion, simplifying here
+                du = -Yold + Wx - torch.sqrt(self.alpha) * self.b - M_Y
+                #uy = Y + dt * du
+                Y = Yold + self.dt * (du - self.lbd1)
+                #Y = torch.maximum((uy - self.lbd1) / (self.lbd2 + diag_M), torch.zeros_like(uy)) 
+                Y *= self.reciprocal_diag_M  # Using precomputed reciprocal
+                Y = torch.maximum(Y, torch.zeros_like(Y))
+                # Reduce synchronization by moving error computation outside the loop or less frequent
+                if count % 100 == 0:  # Check convergence every 10 iterations to reduce overhead
+                    err = torch.norm(Y - Yold) / (torch.norm(Yold) + 1e-10) / dt
+                    if err.item() < 1e-4:
+                        break            
+                if torch.max(Y)>1e12:
+                    pdb.set_trace()  # Execution will pause here, and the debugger will start
 
-            # Reduce synchronization by moving error computation outside the loop or less frequent
-            if count % 100 == 0:  # Check convergence every 10 iterations to reduce overhead
-                err = torch.norm(Y - Yold) / (torch.norm(Yold) + 1e-10) / dt
-                if err.item() < 1e-4:
-                    break
             Yold = Y.clone()
 
         return Y
 
-class PlaceCellNetworkj(nn.Module):
-    def __init__(self, input_dim, output_dim, MaxIter, dt, alpha=0.0, lbd1=0.0, lbd2=0.0):
-        super(PlaceCellNetwork, self).__init__()
-        #self.device = device  # Define the device where the parameters will be stored
-        self.W = nn.Parameter(torch.randn(output_dim, input_dim, device=device))
-        self.M = nn.Parameter(torch.eye(output_dim, device=device))
-        self.b = nn.Parameter(torch.zeros(output_dim, device=device))
-        self.MaxIter = MaxIter
-        self.dt = dt
-        self.alpha = alpha
-        self.lbd1 = lbd1
-        self.lbd2 = lbd2
-        self.errTrack = torch.rand(5, 1, device=device)  # Store on the correct device
-
-    def forward(self, X):
-        X = X.to(self.W.device)  # Ensure input is on the same device as model parameters
-        batch_size = X.size(0)
-        Y = torch.zeros(batch_size, self.W.size(0), device=self.W.device)
-        Yold = Y.clone()
-        diag_M = torch.diag(self.M)  # Correct use of torch.diag_embed
-        Wx = torch.mm(X, self.W.t())  # Use matrix multiplication correctly
-        MO = self.M - torch.diag_embed(diag_M)
-
-        for count in range(self.MaxIter):
-            M_Y = torch.mm(Yold, MO)
-            dt = self.dt  # Time step might be adaptive based on some criterion, simplifying here
-            du = -Yold + Wx - np.sqrt(self.alpha) * self.b - M_Y
-            uy = Y + dt * du
-            Y = torch.maximum(uy - self.lbd1, torch.zeros_like(uy)) / (self.lbd2 + diag_M)
-
-            err = torch.norm(Y - Yold) / (torch.norm(Yold) + 1e-10) / dt
-            if err.item() < 1e-4:
-                break
-            Yold = Y.clone()
-
-        return Y
 ### o2
 
 ##############################################################################
@@ -193,22 +173,26 @@ def similarity_matching_cost(x, model, C, alpha=0.0, beta_1=0.0, beta_2=0.0):
     M_jj = M_diag.unsqueeze(0)  # Make it a row vector
     E = torch.zeros_like(M)
     mask = torch.eye(M.size(0), dtype=torch.bool)
-    E[~mask] = (M[~mask] / (torch.sqrt(M_ii) * torch.sqrt(M_jj))[~mask]) - (C[~mask])
+    #### this is wrong should be corrected, the abs should be removed
+    E[~mask] = (M[~mask] / (torch.sqrt(torch.abs(M_ii)) * torch.sqrt(torch.abs(M_jj)))[~mask]) #- (C[~mask])
 
     cost += alpha * torch.norm(E, 'fro')
+
+    if torch.isnan(cost):
+        pdb.set_trace()
 
     return cost
 
 ##############################################################################
 ##############################################################################
 
-def Simulate_Drift_NL(X, stdW , stdM, rho, auto, model, input_dim, output_dim, lr, alpha=0.0, beta_1=0.0, beta_2=0.0):
+def Simulate_Drift_NL(X, stdW , stdM, rho, dt, model, input_dim, output_dim, lr, model_type, alpha=0.0, beta_1=0.0, beta_2=0.0):
 
     X = X.to(device)
     model.to(device)
 
-    plt.ion()  # Turn on interactive plotting
-    fig, ax = plt.subplots()  # Create a figure and axes object
+    #plt.ion()  # Turn on interactive plotting
+    #fig, ax = plt.subplots()  # Create a figure and axes object
 
     #stdW = syn_noise_std
     #stdM = syn_noise_std
@@ -234,9 +218,9 @@ def Simulate_Drift_NL(X, stdW , stdM, rho, auto, model, input_dim, output_dim, l
     C_target = C_target_np.triu() + C_target_np.triu(1).transpose(0, 1) - torch.diag(torch.diag(C_target_np))
 
     #model_WM = SimilarityMatchingNetwork_WM(input_dim, output_dim)
-    optimizer_WM = torch.optim.SGD(model.parameters(), lr=lr)
-    DeltaWM_W_manual = torch.nn.Parameter(torch.randn(output_dim, input_dim).to(device))
-    DeltaWM_M_manual = torch.nn.Parameter(torch.eye(output_dim).to(device))
+    #optimizer_WM = torch.optim.SGD(model.parameters(), lr=lr)
+    #DeltaWM_W_manual = torch.nn.Parameter(torch.randn(output_dim, input_dim).to(device))
+    #DeltaWM_M_manual = torch.nn.Parameter(torch.eye(output_dim).to(device))
     nn = 0
 
     #fig, ax = plt.subplots()    
@@ -252,13 +236,13 @@ def Simulate_Drift_NL(X, stdW , stdM, rho, auto, model, input_dim, output_dim, l
             #pdb.set_trace()  # Execution will pause here
 
         # Randomly select one sample
-        curr_inx = torch.randint(0, num_samples, (100,), device=device) #torch.tensor([1])
+        curr_inx = torch.randint(0, num_samples, (500,), device=device) #torch.tensor([1])
         x_curr = X[curr_inx,:].to(device)  # Current input sample
         Y_WM = model(x_curr)
 
         xis = torch.randn_like(model.W) * stdW
         zetas = torch.randn_like(model.M) * stdM
-        xi_b = torch.randn_like(model.b) * stdM * 0
+        #xi_b = torch.randn_like(model.b) * stdM * 0
 
         # M = model.M
         # C = C_target
@@ -274,9 +258,10 @@ def Simulate_Drift_NL(X, stdW , stdM, rho, auto, model, input_dim, output_dim, l
         #DeltaW = lr * torch.mm(x_curr.t(), model(x_curr) - model.W) + torch.sqrt(torch.tensor(lr)) * xis
         DeltaW = lr * (torch.matmul(Y_WM.t(), x_curr) / x_curr.size(0) - model.W) + torch.sqrt(torch.tensor(lr)) * xis
         DeltaM = lr * (torch.matmul(Y_WM.t(), Y_WM) / Y_WM.size(0) - model.M) + torch.sqrt(torch.tensor(lr)) * zetas
-        Deltab = lr * (np.sqrt(alpha) * torch.mean(Y_WM, dim=0) - model.b) + torch.sqrt(torch.tensor(lr)) * xi_b
-            
-        #pdb.set_trace()  # Execution will pause here
+        if model_type == 'nonlinear':
+            Deltab = lr * (np.sqrt(alpha) * torch.mean(Y_WM, dim=0) - model.b) #+ torch.sqrt(torch.tensor(lr)) * xi_b
+
+
 
         # DeltaW = torch.where(torch.isinf(DeltaW), torch.tensor(0.0), DeltaW)
         # DeltaM = torch.where(torch.isinf(DeltaM), torch.tensor(0.0), DeltaM)
@@ -286,11 +271,18 @@ def Simulate_Drift_NL(X, stdW , stdM, rho, auto, model, input_dim, output_dim, l
         # DeltaM = torch.where(torch.isnan(DeltaM), torch.tensor(0.0), DeltaM)
         # Deltab = torch.where(torch.isnan(Deltab), torch.tensor(0.0), Deltab)
 
+
+        #user_input = input("Enter 'I' to enter debug mode, or any other key to continue: ")
+        if torch.isnan(torch.mean(DeltaW.detach()) + torch.mean(DeltaM.detach()))==1:#user_input.upper() == 'I':
+            print("Entering debug mode...")
+            pdb.set_trace()  # Execution will pause here, and the debugger will start
+
         with torch.no_grad():
-            if torch.all(torch.isfinite(DeltaW)) and torch.all(torch.isfinite(DeltaM)) and torch.all(torch.isfinite(Deltab)):
+            if torch.all(torch.isfinite(DeltaW)) and torch.all(torch.isfinite(DeltaM)):
                 model.W += DeltaW
                 model.M += DeltaM
-                model.b += Deltab
+                if model_type == 'nonlinear':
+                    model.b += Deltab
             else:
                 print(DeltaM)
                 #print(DeltaM)
@@ -311,11 +303,10 @@ def Simulate_Drift_NL(X, stdW , stdM, rho, auto, model, input_dim, output_dim, l
         # plt.draw
 
         if epoch % 1000 == 0:
-            cost_WM = similarity_matching_cost(x_curr, model, C_target, alpha, beta_1, beta_2)
-            print(f'Epoch {epoch}, Cost: {cost_WM.item()}')
+            cost_WM = torch.tensor(0.000000000)# similarity_matching_cost(x_curr, model, C_target, alpha, beta_1, beta_2)
             end_time=time.time()
             elapsed_time = end_time - start_time
-            print(f"Iteration {epoch}: {elapsed_time:.6f} seconds")
+            print(f'Cost: {cost_WM.item():.4f}, Elapsed Time: {elapsed_time:.6f} seconds, Epoch= {epoch}')
 
 
     for inn in range(Yt_WM.shape[2]):
@@ -345,24 +336,27 @@ def Simulate_Drift_NL(X, stdW , stdM, rho, auto, model, input_dim, output_dim, l
 ##############################################################################
 ##############################################################################
 
-input_dim = 5#3  # Example input dimension
-output_dim = 10  # Example output dimension
-tot_iter = 10000  # Maximum iterations
-dt = 0.05
-lr = 0.01
+input_dim = 10#3  # Example input dimension
+output_dim = 20  # Example output dimension
+tot_iter = 50000  # Maximum iterations
+dt = 0.1
+lr = 0.1
 num_samples = 10000
-stdW = 0
-stdM = 0
-alpha = 1
-beta_1 = 0.005
-beta_2 = 0.005
-model = PlaceCellNetwork(input_dim, output_dim, tot_iter, dt, alpha, beta_1, beta_2)
-X = torch.randn(num_samples, input_dim-1, device=device)  # Example input data
+stdW = 0.0
+stdM = 0.0
+alpha = 0.01
+beta_1 = 0.0001
+beta_2 = 0.0001
+model_type='linear'
+
+model = PlaceCellNetwork(input_dim, output_dim, tot_iter, dt, model_type, alpha, beta_1, beta_2)
+X = torch.randn(num_samples, input_dim, device=device)  # Example input data
 X[:,0]+=1
 X[:,1]+=2
-
-binary_variable = torch.randint(0, 2, (num_samples, 1), device=device)
-X = torch.cat((X, binary_variable), dim=1)
+X[:,2]+=3
+X[:,3]+=4
+#binary_variable = torch.randint(0, 2, (num_samples, 1), device=device)
+#X = torch.cat((X, binary_variable), dim=1)
 Y = model(X)  # Apply the forward pass
 auto = 0
 rho = 0.0
@@ -379,7 +373,7 @@ rho = 0.0
 
 
  
-Ds0, entropy0, Similarity0, Yt_WM0, model_WM0 =  Simulate_Drift_NL(X, stdW, stdM, rho, auto, model, input_dim,output_dim, lr, alpha, beta_1, beta_2)
+Ds0, entropy0, Similarity0, Yt_WM0, model_WM0 =  Simulate_Drift_NL(X, stdW, stdM, rho, dt, model, input_dim,output_dim, lr, model_type, alpha, beta_1, beta_2)
 
 # M = model_WM0.M
 # C = C_target
@@ -410,11 +404,9 @@ Ds0, entropy0, Similarity0, Yt_WM0, model_WM0 =  Simulate_Drift_NL(X, stdW, stdM
 #avg_Ds0 = np.mean(Ds0)
 #print(f"stdW: {0:.2f}, stdM: {0:.2f}, rho: {0:.2f}, Avg Ds: {np.mean(avg_Ds0):.4f}, Volume: {np.mean(volume0):.4f}")
 
-
-stdWs = torch.linspace(0, 0.00005, 5, device=device)
-stdMs = torch.linspace(0, 0.00005, 5, device=device)
+stdWs = torch.linspace(0.0, 0.05, 20, device=device)
+stdMs = torch.linspace(0.0, 0.05, 20, device=device)
 rhos = torch.linspace(-0.1, 0.1, 3, device=device)
-
 
 # Prepare to store the results
 #Ds_results = np.zeros((len(stdWs), len(stdMs), len(rhos)))
@@ -429,12 +421,14 @@ for i, stdW in enumerate(stdWs):
             #     Ds0, entropy0, Yt_WM0, model_WM0 =  Simulate_Drift_NL(X, 0, 0, rho, auto, model, input_dim, output_dim, dt, alpha, beta_1, beta_2)
             #     Yt_WM_storage = np.zeros((len(stdWs), len(stdMs), len(rhos), Yt_WM0.shape[0], Yt_WM0.shape[1], Yt_WM0.shape[2]))
         #if i == 0 and j == 0:
-        Ds0, entropy0, Similarity0, Yt_WM0, model_WM0 =  Simulate_Drift_NL(X, stdW, stdM, rho, auto, model, input_dim, output_dim, dt, alpha, beta_1, beta_2)
+        Ds0, entropy0, Similarity0, Yt_WM0, model_WM =  Simulate_Drift_NL(X, stdW, stdM, rho, dt, model_WM0, input_dim, output_dim, dt, model_type, alpha, beta_1, beta_2)
             #Yt_WM_storage[i, j, k] = Yt_WM0#np.zeros((len(stdWs), len(stdMs), len(rhos), Yt_WM0.shape[0], Yt_WM0.shape[1], Yt_WM0.shape[2]))
         k = 0
         rho = 0.0
-        Ds, ent, Simil, Yt_WM, model =  Simulate_Drift_NL(X, stdW, stdM, rho, auto, model_WM0, input_dim, output_dim, dt, alpha, beta_1, beta_2)
-
+            
+        #pdb.set_trace()  # Execution will pause here, and the debugger will start
+        Ds, ent, Simil, Yt_WM, model =  Simulate_Drift_NL(X, stdW, stdM, rho, dt, model_WM, input_dim, output_dim, dt, model_type, alpha, beta_1, beta_2)
+        
         avg_Ds = Ds
         Ds_results[i, j] = avg_Ds
         entropy_results[i, j] = ent
@@ -445,8 +439,8 @@ for i, stdW in enumerate(stdWs):
         sel_inx = 100  # Ensure sel_inx is within the bounds of Yt_WM's dimensions
         if Yt_WM.size(2) > sel_inx:
             y_WM_np = Yt_WM[:, :, sel_inx].cpu().numpy()  # Move to CPU for plotting
-            for ii in range(output_dim):
-                plt.plot(y_WM_np[ii, ::20], label=f'Output dimension {ii+1}', alpha=0.6)
+            for ii in range(5):#range(output_dim):
+                plt.plot(y_WM_np[ii, ::100], label=f'Output dimension {ii+1}', alpha=0.6)
             plt.legend()
             plt.show(block=False)
 
