@@ -112,13 +112,8 @@ def similarity_matching_cost(x, model, C):
 
 ############################################################################## 
 ##############################################################################
-#   File "/home/hs258/Codes_Folder/Houman_Git/Drift/Drift_Single_CUDA.py", line 254, in <module>
-#     Ds0, volume0, Yt_WM0, model_WM0 =  Simulate_Drift(X, 0, 0, rho, auto, model_WM, input_dim,output_dim)
-#   File "/home/hs258/Codes_Folder/Houman_Git/Drift/Drift_Single_CUDA.py", line 176, in Simulate_Drift
-#     DeltaWM_W_manual = dt * (torch.matmul(Y_WM.t(), x_curr) / x_curr.size(0) - model_WM.W)+ torch.sqrt(torch.tensor(dt)) * xis  # y_i x_j - W_ij
-# RuntimeError: Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!
 
-# rrr
+#F
 
 def Simulate_Drift(X, stdW , stdM, rho, auto, model_WM, input_dim,output_dim):
     
@@ -136,6 +131,7 @@ def Simulate_Drift(X, stdW , stdM, rho, auto, model_WM, input_dim,output_dim):
     #stdM = syn_noise_std
     num_sel = 200 # randomly selected samples used to calculate the drift and diffusion constants
     step = 10    # store every 10 updates
+    num_samples = X.shape[0]
     time_points = round(tot_iter / step)
     sel_inx = torch.randperm(num_samples)[:200].to(device)  # select indices on GPU
 
@@ -174,24 +170,24 @@ def Simulate_Drift(X, stdW , stdM, rho, auto, model_WM, input_dim,output_dim):
             optimizer_WM.step()
 
         # Generate noise matrices
-        xis = torch.randn(output_dim, input_dim) * stdW 
-        zetas = torch.randn(output_dim, output_dim) * stdM 
+        xis = torch.randn(output_dim, input_dim, device=device) * stdW 
+        zetas = torch.randn(output_dim, output_dim, device=device) * stdM 
 
         # Update W and M with noise
-        DeltaWM_W_manual = dt * (torch.matmul(Y_WM.t(), x_curr) / x_curr.size(0) - model_WM.W)+ torch.sqrt(torch.tensor(dt)) * xis  # y_i x_j - W_ij
+        DeltaWM_W_manual = dt * (torch.matmul(Y_WM.t(), x_curr) / x_curr.size(0) - model_WM.W)+ torch.sqrt(torch.tensor(dt, device=device)) * xis  # y_i x_j - W_ij
 
         M = model_WM.M
         C = C_target
         M_diag = torch.diag(M)
         M_ii = M_diag.unsqueeze(1)  # Make it a column vector
         M_jj = M_diag.unsqueeze(0)  # Make it a row vector
-        E = torch.zeros_like(M)
-        mask = torch.eye(M.size(0), dtype=torch.bool)
+        E = torch.zeros_like(M, device=device)
+        mask = torch.eye(M.size(0), dtype=torch.bool, device=device)
         E[~mask] = (M[~mask] / (M_ii * M_jj)[~mask]) - (C[~mask] / (torch.sqrt(M_ii) * torch.sqrt(M_jj))[~mask])
         c_alpha = 1
         #print(c_alpha)
 
-        DeltaWM_M_manual = dt * (torch.matmul(Y_WM.t(), Y_WM) / Y_WM.size(0) - model_WM.M- c_alpha * E)+ torch.sqrt(torch.tensor(dt)) * zetas  # y_i y_j - M_ij torch.sqrt(torch.tensor(dt))
+        DeltaWM_M_manual = dt * (torch.matmul(Y_WM.t(), Y_WM) / Y_WM.size(0) - model_WM.M- c_alpha * E)+ torch.sqrt(torch.tensor(dt, device=device)) * zetas  # y_i y_j - M_ij torch.sqrt(torch.tensor(dt))
 
         if auto == 0:
             if torch.all(torch.isfinite(DeltaWM_W_manual)) and torch.all(torch.isfinite(DeltaWM_M_manual)):
