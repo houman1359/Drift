@@ -215,8 +215,8 @@ def Simulate_Drift(X, stdW , stdM, rho, auto, model_WM, input_dim,output_dim):
         Ds_v[inn] = compute_diffusion_constants(y_WM_np, plot=False)
         volume_v[inn] = estimate_volume_convex_hull(y_WM_np.T)
 
-    Ds = np.mean(Ds_v,axis=0)
-    volume = np.mean(volume_v,axis=0)
+    Ds = torch.mean(Ds_v,axis=0)
+    volume = torch.mean(volume_v,axis=0)
 
     return Ds, volume, Yt_WM, model_WM
 
