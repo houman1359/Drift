@@ -117,7 +117,7 @@ def similarity_matching_cost(x, model, C):
 
 def Simulate_Drift(X, stdW , stdM, rho, auto, model_WM, input_dim,output_dim):
     
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    #device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     X = X.to(device)
     model_WM.to(device)
@@ -134,10 +134,12 @@ def Simulate_Drift(X, stdW , stdM, rho, auto, model_WM, input_dim,output_dim):
     num_samples = X.shape[0]
     time_points = round(tot_iter / step)
     sel_inx = torch.randperm(num_samples)[:200].to(device)  # select indices on GPU
-
-    Yt_WM = np.zeros((output_dim, time_points, num_sel))
-    Ds_v = np.zeros((time_points-200))
-    volume_v = np.zeros((time_points-200))
+    Yt_WM = torch.zeros(output_dim, time_points, num_sel, device=device)
+    #Ds_v = np.zeros((time_points-200))
+    #volume_v = np.zeros((time_points-200))
+    Ds_v = torch.zeros(time_points, device=device)
+    volume_v = torch.zeros(time_points, device=device)
+    #Similarity = torch.zeros(time_points, output_dim, output_dim, device=device)
 
     # Create target correlation matrix C_target on GPU
     C_target = torch.full((output_dim, output_dim), rho, device=device)
