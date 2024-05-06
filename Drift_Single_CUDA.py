@@ -35,28 +35,32 @@ def estimate_volume_convex_hull(points):
         print("Error computing the convex hull. The points may be collinear or not span the entire space.")
         return None
 
+
+
 def compute_diffusion_constants(Y, plot=False):
-    if isinstance(Y, torch.Tensor):
-        Y = Y.detach().numpy()
-    
+    Y = Y.detach()  # Detach Y for calculations without gradient tracking
+
     components, time_points = Y.shape  # Extract dimensions
+    Ds = torch.zeros(components, device=Y.device)  # Initialize Ds tensor on the same device as Y
 
-    def linear_fit(t, D):
-        return 2 * D * t
-    Ds = np.zeros(components)
     for component in range(components):
-        Y_component = Y[component,:]         
-        MSD = np.square(Y_component - Y_component[0])
-        time_steps = np.arange(time_points)
-        params, _ = curve_fit(linear_fit, time_steps, MSD)
-        
-        Ds[component] = params[0] #np.mean(MSD) #
+        Y_component = Y[component, :]
+        MSD = torch.pow(Y_component - Y_component[0], 2)  # Mean Squared Displacement calculation
+        time_steps = torch.arange(time_points, device=Y.device).float()  # Time steps
 
-    Dsm=np.mean(Ds)
-    
+        # Linear fit function: y = 2Dt
+        # Fitting y = 2Dt using least squares to find D
+        # Assume y = A * x + B where A should be 2D and B ~ 0
+        # Using simple linear regression formula D = (sum(xi*yi) - n*xmean*ymean) / (sum(xi^2) - n*xmean^2)
+        xmean = time_steps.mean()
+        ymean = MSD.mean()
+        A = (torch.sum(time_steps * MSD) - time_points * xmean * ymean) / (torch.sum(time_steps ** 2) - time_points * xmean ** 2)
+        D = A / 2  # Since the slope should be 2D
+
+        Ds[component] = D
+
+    Dsm = Ds.mean().item()  # Mean of diffusion constants across all components
     return Dsm
-
-
 ##############################################################################
 # Neural Network Model Definition
 class SimilarityMatchingNetwork_WM(nn.Module):
