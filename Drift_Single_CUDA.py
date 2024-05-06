@@ -112,7 +112,11 @@ def similarity_matching_cost(x, model, C):
 
 ############################################################################## 
 ##############################################################################
-
+  File "/home/hs258/Codes_Folder/Houman_Git/Drift/Drift_Single_CUDA.py", line 254, in <module>
+    Ds0, volume0, Yt_WM0, model_WM0 =  Simulate_Drift(X, 0, 0, rho, auto, model_WM, input_dim,output_dim)
+  File "/home/hs258/Codes_Folder/Houman_Git/Drift/Drift_Single_CUDA.py", line 176, in Simulate_Drift
+    DeltaWM_W_manual = dt * (torch.matmul(Y_WM.t(), x_curr) / x_curr.size(0) - model_WM.W)+ torch.sqrt(torch.tensor(dt)) * xis  # y_i x_j - W_ij
+RuntimeError: Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!
 
 
 def Simulate_Drift(X, stdW , stdM, rho, auto, model_WM, input_dim,output_dim):
@@ -120,7 +124,7 @@ def Simulate_Drift(X, stdW , stdM, rho, auto, model_WM, input_dim,output_dim):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     X = X.to(device)
-    model.to(device)
+    model_WM.to(device)
     #input_dim = 10  # Example dimensions
     #output_dim = 3
     tot_iter = 100000
