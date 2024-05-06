@@ -272,8 +272,8 @@ def Simulate_Drift_NL(X, stdW , stdM, rho, dt, model, input_dim, output_dim, lr,
         x_curr = X[curr_inx,:].to(device)  # Current input sample
         Y_WM = model(x_curr)
 
-        xis = torch.randn_like(model.W) * stdW
-        zetas = torch.randn_like(model.M) * stdM
+        xis = torch.randn_like(model.W, device=device) * stdW
+        zetas = torch.randn_like(model.M, device=device) * stdM
         #xi_b = torch.randn_like(model.b) * stdM * 0
 
         #zetas_uncorrelated = torch.randn_like(model.M) * stdM
