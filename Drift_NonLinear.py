@@ -35,7 +35,7 @@ def estimate_volume_convex_hull(points):
         print("Error computing the convex hull. The points may be collinear or not span the entire space.")
         return None
 
-def compute_diffusion_constants(Y, plot=False):
+def compute_diffusion_constantsI(Y, plot=False):
     if isinstance(Y, torch.Tensor):
         #Y = Y.detach().numpy()
         Y = Y.cpu().detach().numpy()  # Ensure tensor is on CPU and converted to numpy
@@ -56,6 +56,31 @@ def compute_diffusion_constants(Y, plot=False):
     Dsm=np.mean(Ds)
     
     return Dsm
+
+def compute_diffusion_constants(Y, plot=False):
+    Y = Y.detach()  # Detach Y for calculations without gradient tracking
+
+    components, time_points = Y.shape  # Extract dimensions
+    Ds = torch.zeros(components, device=Y.device)  # Initialize Ds tensor on the same device as Y
+
+    for component in range(components):
+        Y_component = Y[component, :]
+        MSD = torch.pow(Y_component - Y_component[0], 2)  # Mean Squared Displacement calculation
+        time_steps = torch.arange(time_points, device=Y.device).float()  # Time steps
+        # Linear fit function: y = 2Dt
+        # Fitting y = 2Dt using least squares to find D
+        # Assume y = A * x + B where A should be 2D and B ~ 0
+        # Using simple linear regression formula D = (sum(xi*yi) - n*xmean*ymean) / (sum(xi^2) - n*xmean^2)
+        xmean = time_steps.mean()
+        ymean = MSD.mean()
+        A = (torch.sum(time_steps * MSD) - time_points * xmean * ymean) / (torch.sum(time_steps ** 2) - time_points * xmean ** 2)
+        D = A / 2  # Since the slope should be 2D
+
+        Ds[component] = D
+
+    Dsm = Ds.mean().item()  # Mean of diffusion constants across all components
+    return Ds
+
 
 def compute_entropy_from_histogram(distances, bins='auto'):
     y = np.zeros(distances.shape[0])
@@ -158,7 +183,30 @@ class PlaceCellNetwork(nn.Module):
         return Y
 
 ### o2
+class SimilarityMatchingNetwork_WM(nn.Module):
+    def __init__(self, input_dim, output_dim, device):
+        super(SimilarityMatchingNetwork_WM, self).__init__()
+        self.W = nn.Parameter(torch.randn(output_dim, input_dim, device=device))
+        self.M = nn.Parameter(torch.eye(output_dim, device=device))
+        
+    def forward(self, x):
+        M_noisy = self.M
+        W_noisy = self.W
+        I = torch.eye(M_noisy.size(0), device=device)
 
+        det_A = torch.det(M_noisy)
+        is_singular = torch.isclose(det_A, torch.tensor(0.0, device=device))
+
+        if not is_singular:
+            M_inv = torch.inverse(M_noisy)
+            print(22)
+        else:
+            M_inv = torch.full(M_noisy.shape, float('nan'), device=device)
+            print(33)
+
+        # Apply transformation using temporary noisy M
+        y = M_inv @ W_noisy @ x.t()
+        return y.t()
 ##############################################################################
 ##############################################################################
 
@@ -219,7 +267,7 @@ def Simulate_Drift_NL(X, stdW , stdM, rho, dt, model, input_dim, output_dim, lr,
     sel_inx = torch.randperm(num_samples)[:num_sel].to(device)
 
     Yt_WM = torch.zeros(output_dim, time_points, num_sel, device=device)
-    Ds_v = torch.zeros(time_points, device=device)
+    Ds_v = torch.zeros(time_points, output_dim, device=device)
     volume_v = torch.zeros(time_points, device=device)
     Similarity = torch.zeros(time_points, output_dim, output_dim, device=device)
 
@@ -300,16 +348,16 @@ def Simulate_Drift_NL(X, stdW , stdM, rho, dt, model, input_dim, output_dim, lr,
 
         #pdb.set_trace()  # Execution will pause here, and the debugger will start
 
-        diagonal_mask = torch.eye(model.M.shape[0], dtype=bool)
-        non_diagonal_mask = ~diagonal_mask
-        common_update = torch.matmul(Y_WM.t(), Y_WM) / Y_WM.size(0) - model.M
-        DeltaM = torch.zeros_like(model.M)
-        DeltaM[diagonal_mask] = lr * (common_update[diagonal_mask]) + torch.sqrt(torch.tensor(lr)) * zetas[diagonal_mask]
+        #diagonal_mask = torch.eye(model.M.shape[0], dtype=bool)
+        #non_diagonal_mask = ~diagonal_mask
+        #common_update = torch.matmul(Y_WM.t(), Y_WM) / Y_WM.size(0) - model.M
+        #DeltaM = torch.zeros_like(model.M)
+        #DeltaM[diagonal_mask] = lr * (common_update[diagonal_mask]) + torch.sqrt(torch.tensor(lr)) * zetas[diagonal_mask]
         #DeltaM[non_diagonal_mask] = lr * (common_update[non_diagonal_mask] - alpha_co * model.M[non_diagonal_mask] + alpha_co * mCm[non_diagonal_mask]) + torch.sqrt(torch.tensor(lr)) * zetas[non_diagonal_mask]
 
         #DeltaW = lr * torch.mm(x_curr.t(), model(x_curr) - model.W) + torch.sqrt(torch.tensor(lr)) * xis
         DeltaW = lr * (torch.matmul(Y_WM.t(), x_curr) / x_curr.size(0) - model.W) + torch.sqrt(torch.tensor(lr)) * xis
-        #DeltaM = lr * (torch.matmul(Y_WM.t(), Y_WM) / Y_WM.size(0) - model.M) + torch.sqrt(torch.tensor(lr)) * zetas
+        DeltaM = lr * (torch.matmul(Y_WM.t(), Y_WM) / Y_WM.size(0) - model.M) + torch.sqrt(torch.tensor(lr)) * zetas
         if model_type == 'nonlinear':
             Deltab = lr * (np.sqrt(alpha_nl) * torch.mean(Y_WM, dim=0) - model.b) #+ torch.sqrt(torch.tensor(lr)) * xi_b
 
@@ -333,9 +381,9 @@ def Simulate_Drift_NL(X, stdW , stdM, rho, dt, model, input_dim, output_dim, lr,
             if torch.all(torch.isfinite(DeltaW)) and torch.all(torch.isfinite(DeltaM)):
                 model.W += DeltaW
                 model.M += DeltaM
-                mm = torch.sqrt(torch.diag(torch.diag(model.M)))
-                mmm = torch.matmul(torch.matmul(mm, C_target),mm)
-                model.M[non_diagonal_mask] = mmm[non_diagonal_mask] + torch.sqrt(torch.tensor(lr)) * zetas[non_diagonal_mask]
+                #mm = torch.sqrt(torch.diag(torch.diag(model.M)))
+                #mmm = torch.matmul(torch.matmul(mm, C_target),mm)
+                #model.M[non_diagonal_mask] = mmm[non_diagonal_mask] + torch.sqrt(torch.tensor(lr)) * zetas[non_diagonal_mask]
                 #pdb.set_trace()  # Execution will pause here, and the debugger will start
 
                 if model_type == 'nonlinear':
@@ -348,6 +396,7 @@ def Simulate_Drift_NL(X, stdW , stdM, rho, dt, model, input_dim, output_dim, lr,
         if epoch % step == 0: #and epoch>1000:
             y=model(X[sel_inx,:])
             yx =y.detach()
+#            pdb.set_trace()
             Yt_WM[:,nn,:] = yx.t()
             nn += 1
 
@@ -369,7 +418,7 @@ def Simulate_Drift_NL(X, stdW , stdM, rho, dt, model, input_dim, output_dim, lr,
     for inn in range(Yt_WM.shape[2]):
         selYInx = inn#100  # np.random.choice(range(num_sel), 1, replace=False)
         y_WM_np = Yt_WM[:,100:-200,selYInx]
-        Ds_v[inn] = compute_diffusion_constants(y_WM_np, plot=False)
+        Ds_v[inn,:] = compute_diffusion_constants(y_WM_np, plot=False)
         #volume_v[inn] = estimate_volume_convex_hull(y_WM_np.T)
         volume_v[inn] = compute_entropy_from_histogram(y_WM_np)
         y_WM_np_cpu = y_WM_np.cpu().numpy()
@@ -393,14 +442,14 @@ def Simulate_Drift_NL(X, stdW , stdM, rho, dt, model, input_dim, output_dim, lr,
 ##############################################################################
 ##############################################################################
 
-input_dim = 10#3  # Example input dimension
-output_dim = 50  # Example output dimension
+input_dim = 5#3  # Example input dimension
+output_dim = 100  # Example output dimension
 tot_iter = 50000  # Maximum iterations
 dt = 0.05
-lr = 0.5
+lr = 0.2
 num_samples = 10000
-stdW = 0.1
-stdM = 0.1
+stdW = 0.01
+stdM = 0.01
 model_type='linear'
 alpha_co = 1
 
@@ -450,7 +499,7 @@ rho = 0.05
 
 C_target = create_block_correlation_matrix(output_dim, rho)
 
-Ds0, entropy0, Similarity0, Yt_WM0, model_WM0 =  Simulate_Drift_NL(X, stdW, stdM, rho, dt, model, input_dim,output_dim, lr, model_type, alpha_co, alpha_nl, beta_1, beta_2)
+#Ds0, entropy0, Similarity0, Yt_WM0, model_WM =  Simulate_Drift_NL(X, stdW, stdM, rho, dt, model, input_dim,output_dim, lr, model_type, alpha_co, alpha_nl, beta_1, beta_2)
 
 # M = model_WM0.M
 # C = C_target
@@ -483,53 +532,57 @@ Ds0, entropy0, Similarity0, Yt_WM0, model_WM0 =  Simulate_Drift_NL(X, stdW, stdM
 
 stdWs = torch.linspace(0.1, 0.2, 2, device=device)
 stdMs = torch.linspace(0.1, 0.2, 2, device=device)
-rhos = torch.linspace(-0.1, 0.1, 3, device=device)
-dimensions = [5, 20, 40, 60 , 80, 100]#np.arange(5, 50, 10)
+rhos = torch.linspace(0, 0.2, 5, device=device)
+dimensions = np.arange(5, 50, 3)
 
 
 # Prepare to store the results
 #Ds_results = np.zeros((len(stdWs), len(stdMs), len(rhos)))
-Ds_results = torch.zeros((len(stdWs), len(stdMs)), device=device)
+Ds_results = torch.zeros((len(dimensions), len(stdMs)), device=device)
 entropy_results = torch.zeros_like(Ds_results)
-Similarity_results = torch.zeros((len(stdWs), len(stdMs), Similarity0.shape[0], Similarity0.shape[1], Similarity0.shape[2]), device=device)
+#Similarity_results = torch.zeros((len(dimensions), len(stdMs), Similarity0.shape[0], Similarity0.shape[1], Similarity0.shape[2]), device=device)
 
 #for i, inp in enumerate(dimensions):
 #input_dim = 20#inp
-model = PlaceCellNetwork(input_dim, output_dim, tot_iter, dt, model_type, alpha_co, alpha_nl, beta_1, beta_2)
-X = torch.randn(num_samples, input_dim, device=device)
-for ix in range(input_dim):
-    current_mean = X[:, ix].mean()
-    X[:, ix] += (ix + 1) - current_mean
 
-for i, stdW in enumerate(stdWs):
-    for j, stdM in enumerate(stdMs):
-        #stdW = stdM
-        #for k, rho in enumerate(rhos):
-            # if k == 0 and i == 0 and j == 0:
-            #     Ds0, entropy0, Yt_WM0, model_WM0 =  Simulate_Drift_NL(X, 0, 0, rho, auto, model, input_dim, output_dim, dt, alpha, beta_1, beta_2)
-            #     Yt_WM_storage = np.zeros((len(stdWs), len(stdMs), len(rhos), Yt_WM0.shape[0], Yt_WM0.shape[1], Yt_WM0.shape[2]))
-        #if i == 0 and j == 0:
-        Ds0, entropy0, Similarity0, Yt_WM0, model_WM =  Simulate_Drift_NL(X, stdW, stdM, rho, dt, model, input_dim, output_dim, dt, model_type, alpha_co, alpha_nl, beta_1, beta_2)
-            #Yt_WM_storage[i, j, k] = Yt_WM0#np.zeros((len(stdWs), len(stdMs), len(rhos), Yt_WM0.shape[0], Yt_WM0.shape[1], Yt_WM0.shape[2]))
-        k = 0
-            
-        #pdb.set_trace()  # Execution will pause here, and the debugger will start
-        Ds, ent, Simil, Yt_WM, model =  Simulate_Drift_NL(X, stdW, stdM, rho, dt, model_WM, input_dim, output_dim, dt, model_type, alpha_co, alpha_nl, beta_1, beta_2)
+#for i, output in enumerate(dimensions):
+for i, rho in enumerate(rhos):
+    X = torch.randn(num_samples, input_dim, device=device)
+    for ix in range(input_dim):
+        current_mean = X[:, ix].mean()
+        X[:, ix] += (ix + 1) - current_mean
+    model = PlaceCellNetwork(input_dim, output_dim, tot_iter, dt, model_type, alpha_co, alpha_nl, beta_1, beta_2)
+    j=0
+#for i, stdW in enumerate(stdWs):
+#    for j, stdM in enumerate(stdMs):
+    stdM = 0
+    stdW = 0.02#stdM
+    #for k, rho in enumerate(rhos):
+        # if k == 0 and i == 0 and j == 0:
+        #     Ds0, entropy0, Yt_WM0, model_WM0 =  Simulate_Drift_NL(X, 0, 0, rho, auto, model, input_dim, output_dim, dt, alpha, beta_1, beta_2)
+        #     Yt_WM_storage = np.zeros((len(stdWs), len(stdMs), len(rhos), Yt_WM0.shape[0], Yt_WM0.shape[1], Yt_WM0.shape[2]))
+    #if i == 0 and j == 0:
+    #Ds0, entropy0, Similarity0, Yt_WM0, model_WM =  Simulate_Drift_NL(X, stdW, stdM, rho, dt, model, input_dim, output_dim, dt, model_type, alpha_co, alpha_nl, beta_1, beta_2)
+        #Yt_WM_storage[i, j, k] = Yt_WM0#np.zeros((len(stdWs), len(stdMs), len(rhos), Yt_WM0.shape[0], Yt_WM0.shape[1], Yt_WM0.shape[2]))
+    k = 0
         
-        avg_Ds = Ds
-        Ds_results[i, j] = avg_Ds
-        entropy_results[i, j] = ent
-        Similarity_results[i, j,:,:,:] = Simil
-        print(f"stdW: {stdW:.2f}, stdM: {stdM:.2f}, rho: {rho:.2f}, Avg Ds: {avg_Ds:.4f}, entropy: {ent:.4f}")
-        #Yt_WM_storage[i, j, k] = Yt_WM
+    #pdb.set_trace()  # Execution will pause here, and the debugger will start
+    Ds, ent, Simil, Yt_WM, model =  Simulate_Drift_NL(X, stdW, stdM, rho, dt, model, input_dim, output_dim, dt, model_type, alpha_co, alpha_nl, beta_1, beta_2)
+    
+    avg_Ds = Ds
+    Ds_results[i, j] = avg_Ds
+    entropy_results[i, j] = ent
+    #Similarity_results[i, j,:,:,:] = Simil
+    print(f"stdW: {stdW:.2f}, stdM: {stdM:.2f}, rho: {rho:.2f}, Avg Ds: {avg_Ds:.4f}, entropy: {ent:.4f}")
+    #Yt_WM_storage[i, j, k] = Yt_WM
 
-        sel_inx = 100  # Ensure sel_inx is within the bounds of Yt_WM's dimensions
-        if Yt_WM.size(2) > sel_inx:
-            y_WM_np = Yt_WM[:, :, sel_inx].cpu().numpy()  # Move to CPU for plotting
-            for ii in range(output_dim):
-                plt.plot(y_WM_np[ii, ::100], label=f'Output dimension {ii+1}', alpha=0.6)
-            #plt.legend()
-            plt.show(block=False)
+    sel_inx = 100  # Ensure sel_inx is within the bounds of Yt_WM's dimensions
+    if Yt_WM.size(2) > sel_inx:
+        y_WM_np = Yt_WM[:, :, sel_inx].cpu().numpy()  # Move to CPU for plotting
+        for ii in range(output_dim):
+            plt.plot(y_WM_np[ii, ::100], label=f'Output dimension {ii+1}', alpha=0.6)
+        #plt.legend()
+        plt.show(block=False)
 
 
 
@@ -557,146 +610,169 @@ if 1==2:
 ##############################################################################
 ##############################################################################
 
-n, time, trials = Yt_WM.shape  # Example dimensions
-correlation_matrices = np.zeros((time, n, n))
-c12 = np.zeros((time, n))
-c13 = np.zeros((time, n))
-c23 = np.zeros((time, n))
+    n, time, trials = Yt_WM.shape  # Example dimensions
+    correlation_matrices = np.zeros((time, n, n))
+    c12 = np.zeros((time, n))
+    c13 = np.zeros((time, n))
+    c23 = np.zeros((time, n))
 
-for t in range(time):
-    data_at_t = Yt_WM[:, t, :]
-    correlation_matrices[t] = np.corrcoef(data_at_t)
-    c12[t] = correlation_matrices[t][0,1]
-    c13[t] = correlation_matrices[t][0,2]
-    c23[t] = correlation_matrices[t][1,2]
+    for t in range(time):
+        data_at_t = Yt_WM[:, t, :]
+        correlation_matrices[t] = np.corrcoef(data_at_t)
+        c12[t] = correlation_matrices[t][0,1]
+        c13[t] = correlation_matrices[t][0,2]
+        c23[t] = correlation_matrices[t][1,2]
 
-# Calculate the average correlation matrix across all time points
-average_correlation_matrix = np.nanmean(correlation_matrices, axis=0)
+    # Calculate the average correlation matrix across all time points
+    average_correlation_matrix = np.nanmean(correlation_matrices, axis=0)
 
-# Plot the average correlation matrix
-plt.imshow(average_correlation_matrix, cmap='bwr', interpolation='none')
-plt.colorbar()
-plt.title('Average Correlation Matrix Across Time')
-plt.xlabel('n')
-plt.ylabel('n')
-plt.show()
+    # Plot the average correlation matrix
+    plt.imshow(average_correlation_matrix, cmap='bwr', interpolation='none')
+    plt.colorbar()
+    plt.title('Average Correlation Matrix Across Time')
+    plt.xlabel('n')
+    plt.ylabel('n')
+    plt.show()
 
-plt.plot(c12[:1000])
-plt.plot(c13[:1000])
-plt.plot(c23[:1000])
-plt.title('WM model')
-plt.show()
-
-
-
-selYInx = 100  # np.random.choice(range(num_sel), 1, replace=False)
-y_WM_np = Yt_WM[:,:-200,selYInx]
-# Assuming y is the output from the last epoch
-for i in range(output_dim):
-    plt.plot(y_WM_np[i , :], label=f'Output dimension {i+1}', alpha=0.6)
-plt.show()
-
-y_wCw_np1 = Yt_WM[:,100,:]
-
-y_wCw_np1 = Yt_WM[:,180,:]
-# Assuming y is the output from the last epoch
-plt.scatter(y_wCw_np1[0, :], y_wCw_np1[1, :], label=f'Output dimension {i+1}', alpha=0.6, color='blue')
-plt.scatter(y_wCw_np1[1, :], y_wCw_np1[2, :], label=f'Output dimension {i+1}', alpha=0.6, color='red')
-plt.scatter(y_wCw_np1[0, :], y_wCw_np1[2, :], label=f'Output dimension {i+1}', alpha=0.6, color='green')
-plt.show()
-y_wCw_np1 = Yt_WM[:,180,:]
-# Assuming y is the output from the last epoch
-plt.scatter(y_wCw_np1[0, :], y_wCw_np1[1, :], label=f'Output dimension {i+1}', alpha=0.6, color='blue')
-plt.scatter(y_wCw_np1[1, :], y_wCw_np1[2, :], label=f'Output dimension {i+1}', alpha=0.6, color='red')
-plt.scatter(y_wCw_np1[0, :], y_wCw_np1[2, :], label=f'Output dimension {i+1}', alpha=0.6, color='green')
-plt.show()
+    plt.plot(c12[:1000])
+    plt.plot(c13[:1000])
+    plt.plot(c23[:1000])
+    plt.title('WM model')
+    plt.show()
 
 
 
-M = model.M
-w = torch.inverse(torch.sqrt(torch.diag(torch.diag(M))))
-#w = torch.diag(w)
-#w = np.diag(w)
-Cm=torch.matmul(torch.matmul(w.T , M) , w)#-C_target
-Cm = Cm.detach().cpu().numpy()
-plt.imshow(Cm, cmap='bwr', interpolation='none', vmin=-1, vmax=1)
-plt.colorbar()
+    selYInx = 100  # np.random.choice(range(num_sel), 1, replace=False)
+    y_WM_np = Yt_WM[:,:-200,selYInx]
+    # Assuming y is the output from the last epoch
+    for i in range(output_dim):
+        plt.plot(y_WM_np[i , :], label=f'Output dimension {i+1}', alpha=0.6)
+        plt.show()
+
+    y_wCw_np1 = Yt_WM[:,100,:]
+
+    y_wCw_np1 = Yt_WM[:,180,:]
+    # Assuming y is the output from the last epoch
+    plt.scatter(y_wCw_np1[0, :], y_wCw_np1[1, :], label=f'Output dimension {i+1}', alpha=0.6, color='blue')
+    plt.scatter(y_wCw_np1[1, :], y_wCw_np1[2, :], label=f'Output dimension {i+1}', alpha=0.6, color='red')
+    plt.scatter(y_wCw_np1[0, :], y_wCw_np1[2, :], label=f'Output dimension {i+1}', alpha=0.6, color='green')
+    plt.show()
+    y_wCw_np1 = Yt_WM[:,180,:]
+    # Assuming y is the output from the last epoch
+    plt.scatter(y_wCw_np1[0, :], y_wCw_np1[1, :], label=f'Output dimension {i+1}', alpha=0.6, color='blue')
+    plt.scatter(y_wCw_np1[1, :], y_wCw_np1[2, :], label=f'Output dimension {i+1}', alpha=0.6, color='red')
+    plt.scatter(y_wCw_np1[0, :], y_wCw_np1[2, :], label=f'Output dimension {i+1}', alpha=0.6, color='green')
+    plt.show()
 
 
-volume = estimate_volume_convex_hull(y_WM_np.T)
-print(f"Estimated Volume: {volume}")
+
+    M = model.M
+    w = torch.inverse(torch.sqrt(torch.diag(torch.diag(M))))
+    #w = torch.diag(w)
+    #w = np.diag(w)
+    Cm=torch.matmul(torch.matmul(w.T , M) , w)#-C_target
+    Cm = Cm.detach().cpu().numpy()
+    plt.imshow(Cm, cmap='bwr', interpolation='none', vmin=-1, vmax=1)
+    plt.colorbar()
+
+
+    volume = estimate_volume_convex_hull(y_WM_np.T)
+    print(f"Estimated Volume: {volume}")
 
 
 
-n, time, trials = Yt_WM.shape  # Example dimensions
-correlation_matrices = np.zeros((time, n, n))
-c12 = np.zeros((time, n))
-c13 = np.zeros((time, n))
-c23 = np.zeros((time, n))
+    n, time, trials = Yt_WM.shape  # Example dimensions
+    correlation_matrices = np.zeros((time, n, n))
+    c12 = np.zeros((time, n))
+    c13 = np.zeros((time, n))
+    c23 = np.zeros((time, n))
 
-for t in range(time):
-    data_at_t = Yt_WM[:, t, :]
-    correlation_matrices[t] = np.corrcoef(data_at_t)
-    c12[t] = correlation_matrices[t][0,1]
-    c13[t] = correlation_matrices[t][0,2]
-    c23[t] = correlation_matrices[t][1,2]
+    for t in range(time):
+        data_at_t = Yt_WM[:, t, :]
+        correlation_matrices[t] = np.corrcoef(data_at_t)
+        c12[t] = correlation_matrices[t][0,1]
+        c13[t] = correlation_matrices[t][0,2]
+        c23[t] = correlation_matrices[t][1,2]
 
-# Calculate the average correlation matrix across all time points
-average_correlation_matrix = np.nanmean(correlation_matrices, axis=0)
+    # Calculate the average correlation matrix across all time points
+    average_correlation_matrix = np.nanmean(correlation_matrices, axis=0)
 
-# Plot the average correlation matrix
-plt.imshow(average_correlation_matrix, cmap='bwr', interpolation='none', vmin=-1, vmax=1)
-plt.colorbar()
-plt.title('Average Correlation Matrix Across Time')
-plt.xlabel('n')
-plt.ylabel('n')
-plt.show()
+    # Plot the average correlation matrix
+    plt.imshow(average_correlation_matrix, cmap='bwr', interpolation='none', vmin=-1, vmax=1)
+    plt.colorbar()
+    plt.title('Average Correlation Matrix Across Time')
+    plt.xlabel('n')
+    plt.ylabel('n')
+    plt.show()
 
-smSelect = np.random.choice(range(200), 20, replace=False)
+    smSelect = np.random.choice(range(200), 20, replace=False)
 
-# Selecting outputs at two time points
-time1 = 1  # Adjusted for Python indexing
-time2 = 200#round(tot_iter/step)-1  # Assuming tot_iter > 2000
-Y1sel = Yt_WM[:, time1 , smSelect]
-Y2sel = Yt_WM[:, time2 , smSelect]
-# Perform hierarchical clustering to order the indices
-D = pdist(Y1sel.T, 'euclidean')
-tree = linkage(D, 'average')
-# Corrected function name for optimal leaf ordering
-leafOrder = leaves_list(optimal_leaf_ordering(tree, D))
-# Plotting the similarity matrices
-fig, axes = plt.subplots(1, 2, figsize=(12, 6))
-cmap = 'RdBu'  # Assuming RdBuMap is a colormap name in MATLAB; use equivalent in matplotlib
-# Similarity matrix at time1
-sim_matrix_1 = np.dot(Y1sel[:, leafOrder].T, Y1sel[:, leafOrder])
-im = axes[0].imshow(sim_matrix_1, cmap=cmap)#, vmin=-6, vmax=6
-axes[0].set_xticks([0, 9, 19])
-axes[0].set_yticks([0, 9, 19])
-axes[0].set_xlabel('Stimuli')
-axes[0].set_ylabel('Stimuli')
-axes[0].set_title('Time 1 Similarity Matrix')
-# Similarity matrix at time2
-sim_matrix_2 = np.dot(Y2sel[:, leafOrder].T, Y2sel[:, leafOrder])
-im = axes[1].imshow(sim_matrix_2, cmap=cmap)
-axes[1].set_xticks([0, 9, 19])
-axes[1].set_yticks([])
-axes[1].set_xlabel('Stimuli')
-axes[1].set_title('Time 2 Similarity Matrix')
-# Colorbar
-cbar = fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.95)
-cbar.set_label('Similarity')
-plt.tight_layout()
-plt.show()
+    # Selecting outputs at two time points
+    time1 = 1  # Adjusted for Python indexing
+    time2 = 200#round(tot_iter/step)-1  # Assuming tot_iter > 2000
+    Y1sel = Yt_WM[:, time1 , smSelect]
+    Y2sel = Yt_WM[:, time2 , smSelect]
+    # Perform hierarchical clustering to order the indices
+    D = pdist(Y1sel.T, 'euclidean')
+    tree = linkage(D, 'average')
+    # Corrected function name for optimal leaf ordering
+    leafOrder = leaves_list(optimal_leaf_ordering(tree, D))
+    # Plotting the similarity matrices
+    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+    cmap = 'RdBu'  # Assuming RdBuMap is a colormap name in MATLAB; use equivalent in matplotlib
+    # Similarity matrix at time1
+    sim_matrix_1 = np.dot(Y1sel[:, leafOrder].T, Y1sel[:, leafOrder])
+    im = axes[0].imshow(sim_matrix_1, cmap=cmap)#, vmin=-6, vmax=6
+    axes[0].set_xticks([0, 9, 19])
+    axes[0].set_yticks([0, 9, 19])
+    axes[0].set_xlabel('Stimuli')
+    axes[0].set_ylabel('Stimuli')
+    axes[0].set_title('Time 1 Similarity Matrix')
+    # Similarity matrix at time2
+    sim_matrix_2 = np.dot(Y2sel[:, leafOrder].T, Y2sel[:, leafOrder])
+    im = axes[1].imshow(sim_matrix_2, cmap=cmap)
+    axes[1].set_xticks([0, 9, 19])
+    axes[1].set_yticks([])
+    axes[1].set_xlabel('Stimuli')
+    axes[1].set_title('Time 2 Similarity Matrix')
+    # Colorbar
+    cbar = fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.95)
+    cbar.set_label('Similarity')
+    plt.tight_layout()
+    plt.show()
 
 
-Ds_results = Ds_results.cpu().numpy()  
-window_size = 3
-window = np.ones(int(window_size))/float(window_size)
-Ds_results_smoothed_col = np.convolve(Ds_results[:, 0], window, 'same')
-Ds_results_smoothed_row = np.convolve(Ds_results[0, :], window, 'same')
-plt.figure(figsize=(12, 6))
-plt.plot(Ds_results_smoothed_col, label='Smoothed Column', linestyle='--')
-plt.plot(Ds_results_smoothed_row, label='Smoothed Row', linestyle='--')
-plt.legend()
-plt.title("Smoothed Data")
-plt.show()
+    Ds_results = Ds_results.cpu().numpy()  
+    window_size = 3
+    window = np.ones(int(window_size))/float(window_size)
+    Ds_results_smoothed_col = np.convolve(Ds_results[:, 0], window, 'same')
+    Ds_results_smoothed_row = np.convolve(Ds_results[0, :], window, 'same')
+    plt.figure(figsize=(12, 6))
+    plt.plot(Ds_results_smoothed_col, label='Smoothed Column', linestyle='--')
+    plt.plot(Ds_results_smoothed_row, label='Smoothed Row', linestyle='--')
+    plt.legend()
+    plt.title("Smoothed Data")
+    plt.show()
+
+
+
+
+    from scipy.ndimage import uniform_filter1d
+
+    # Sample data (assuming entropy_results[:,0] is a numpy array)
+    data = entropy_results[:4,0]
+    data = Ds_results[:4,0]
+
+    # Apply a moving average for smoothing
+    smoothed_data = uniform_filter1d(data, size=2)  # Adjust the size for more or less smoothing
+
+    # Plotting the original and smoothed data
+    plt.figure(figsize=(10, 5))
+    #plt.plot(data, label='Original', alpha=0.5)  # Original data with lower opacity
+    plt.plot(dimensions,smoothed_data, linewidth=3)  # Smoothed data
+    plt.legend()
+    #plt.title('Smoothed Data Plot')
+    plt.xlabel('Index')
+    #plt.ylabel('Entropy')
+    plt.ylabel('Diffusion rate')
+    plt.show()
