@@ -13,6 +13,7 @@ import pdb
 
 # Ensure all tensors are created on the CUDA device if available
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+torch.backends.cudnn.benchmark = True
 
 ##############################################################################
 # Helper function to generate input data using PyTorch on the specified device
@@ -70,8 +71,6 @@ def estimate_volume_convex_hull(points):
         print("Error computing the convex hull. The points may be collinear or not span the entire space.")
         return None
 
-
-
 def compute_diffusion_constants(Y, plot=False):
     Y = Y.detach()  # Detach Y for calculations without gradient tracking
 
@@ -93,8 +92,19 @@ def compute_diffusion_constants(Y, plot=False):
 
         Ds[component] = D
 
-    #Dsm = Ds.mean().item()  # Mean of diffusion constants across all components
+    Dsm = Ds.mean().item()  # Mean of diffusion constants across all components
     return Ds
+
+def compute_entropy_from_histogram(distances, bins='auto'):
+    y = np.zeros(distances.shape[0])
+
+    for i in range(distances.shape[0]):
+        # Ensure the tensor is moved to the CPU and converted to NumPy before processing with np.histogram
+        hist, _ = np.histogram(distances[i, :].cpu().numpy(), bins=bins, density=True)
+        prob_dist = hist / np.sum(hist)
+        y[i] = entropy(prob_dist)
+
+    return np.mean(y)
 ##############################################################################
 # Neural Network Model Definition
 class SimilarityMatchingNetwork_WM(nn.Module):
@@ -189,7 +199,6 @@ def Simulate_Drift(X, stdW , stdM, rho, auto, model_WM, input_dim,output_dim):
     C_target = torch.where(torch.eye(output_dim, device=device, dtype=torch.bool), C_target, -C_target)
     
     #C_target = create_block_correlation_matrix(output_dim, rho)
-
     #model_WM = SimilarityMatchingNetwork_WM(input_dim, output_dim)
     #optimizer_WM = torch.optim.SGD(model_WM.parameters(), lr=learnRate)
     DeltaWM_W_manual = torch.nn.Parameter(torch.randn(output_dim, input_dim, device=device))
@@ -254,7 +263,7 @@ def Simulate_Drift(X, stdW , stdM, rho, auto, model_WM, input_dim,output_dim):
         selYInx = inn#100  # np.random.choice(range(num_sel), 1, replace=False)
         y_WM_np = Yt_WM[:,:-200,selYInx]
         Ds_v[inn,:] = compute_diffusion_constants(y_WM_np, plot=False)
-        volume_v[inn] = torch.tensor(0.000000000)#estimate_volume_convex_hull(y_WM_np.T)
+        volume_v[inn] = compute_entropy_from_histogram(y_WM_np)#estimate_volume_convex_hull(y_WM_np.T)
 
     Ds = torch.mean(Ds_v,axis=0)
     volume = torch.mean(volume_v,axis=0)
@@ -268,19 +277,22 @@ def Simulate_Drift(X, stdW , stdM, rho, auto, model_WM, input_dim,output_dim):
 ##############################################################################
 ##############################################################################
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")   
-input_dim=20
-output_dim=10#3
+input_dim=1
+output_dim=2#3
 num_samples = 10000
 auto = 0
 
-eigenvalues = [4.5, 3.5, 1]  + [0.01] * (input_dim - 3)  # Eigenvalues for the covariance matrix
-X = generate_PSP_input_torch(eigenvalues, input_dim, num_samples,device)
+#eigenvalues = [4.5, 3.5, 1]  + [0.01] * (input_dim - 3)  # Eigenvalues for the covariance matrix
+#X = generate_PSP_input_torch(eigenvalues, input_dim, num_samples,device)
+X = torch.randn(num_samples, input_dim, device=device)
+for ix in range(input_dim):
+    current_mean = X[:, ix].mean()
+    X[:, ix] += (ix + 1) - current_mean
 
 model_WM = SimilarityMatchingNetwork_WM(input_dim, output_dim, device)
 #Ds0, volume0, y_WM_np0, model_WM0 =  Simulate_Drift(X, 0, 0, 0, auto, model_WM)
 #avg_Ds0 = np.mean(Ds0)
 #print(f"stdW: {0:.2f}, stdM: {0:.2f}, rho: {0:.2f}, Avg Ds: {np.mean(avg_Ds0):.4f}, Volume: {np.mean(volume0):.4f}")
-
 
 stdWs = torch.linspace(0, 0.05, 2, device=device)
 stdMs = torch.linspace(0, 0.05, 2, device=device)
@@ -295,11 +307,10 @@ Ds_results = torch.zeros((len(stdWs), len(stdMs), len(rhos)), device=device)
 volume_results = torch.zeros_like(Ds_results)
 #Similarity_results = torch.zeros((len(stdWs), len(stdMs), Similarity0.shape[0], Similarity0.shape[1], Similarity0.shape[2]), device=device)
 
-
 # for i, stdW in enumerate(stdWs):
 #     for j, stdM in enumerate(stdMs):
 i=0
-stdW=0.0
+stdW=0.02
 j=0
 stdM=0.0
 for k, rho in enumerate(rhos):
@@ -312,7 +323,7 @@ for k, rho in enumerate(rhos):
     Ds, volume, Yt_WM, model_WM =  Simulate_Drift(X, stdW, stdM, rho, auto, model_WM0, input_dim,output_dim)
     avg_Ds = torch.mean(Ds)
     Ds_results[i, j, k] = avg_Ds
-    #volume_results[i, j, k] = volume
+    volume_results[i, j, k] = volume
     print(f"stdW: {stdW:.2f}, stdM: {stdM:.2f}, rho: {rho:.2f}, Avg Ds: {avg_Ds:.4f}, Volume: {volume:.4f}")
     Yt_WM_storage[i, j, k] = Yt_WM
 

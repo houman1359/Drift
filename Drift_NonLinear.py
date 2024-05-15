@@ -337,8 +337,8 @@ def Simulate_Drift_NL(X, stdW , stdM, rho, dt, model, input_dim, output_dim, lr,
         # E[~mask] = (M[~mask] / (M_ii * M_jj)[~mask]) - (C[~mask] / (torch.sqrt(M_ii) * torch.sqrt(M_jj))[~mask])
         # c_alpha = 0.0
         # DeltaWM_M_manual = dt * (torch.matmul(Y_WM.t(), Y_WM) / Y_WM.size(0) - model.M- c_alpha * E)+ torch.sqrt(torch.tensor(dt)) * zetas  # y_i y_j - M_ij torch.sqrt(torch.tensor(dt))
-        #m = torch.sqrt(torch.diag(model.M)).unsqueeze(1)  # Get the diagonal of M
-        #mCm = m.T * C_target * m # C needs to be defined as the symmetric matrix with ones on its diagonal
+        m = torch.sqrt(torch.diag(model.M)).unsqueeze(1)  # Get the diagonal of M
+        mCm = m.T * C_target * m # C needs to be defined as the symmetric matrix with ones on its diagonal
           
         # M = model.M
         # m = torch.sqrt(torch.diag(M))
@@ -348,16 +348,16 @@ def Simulate_Drift_NL(X, stdW , stdM, rho, dt, model, input_dim, output_dim, lr,
 
         #pdb.set_trace()  # Execution will pause here, and the debugger will start
 
-        #diagonal_mask = torch.eye(model.M.shape[0], dtype=bool)
-        #non_diagonal_mask = ~diagonal_mask
-        #common_update = torch.matmul(Y_WM.t(), Y_WM) / Y_WM.size(0) - model.M
-        #DeltaM = torch.zeros_like(model.M)
-        #DeltaM[diagonal_mask] = lr * (common_update[diagonal_mask]) + torch.sqrt(torch.tensor(lr)) * zetas[diagonal_mask]
-        #DeltaM[non_diagonal_mask] = lr * (common_update[non_diagonal_mask] - alpha_co * model.M[non_diagonal_mask] + alpha_co * mCm[non_diagonal_mask]) + torch.sqrt(torch.tensor(lr)) * zetas[non_diagonal_mask]
+        diagonal_mask = torch.eye(model.M.shape[0], dtype=bool)
+        non_diagonal_mask = ~diagonal_mask
+        common_update = torch.matmul(Y_WM.t(), Y_WM) / Y_WM.size(0) - model.M
+        DeltaM = torch.zeros_like(model.M)
+        DeltaM[diagonal_mask] = lr * (common_update[diagonal_mask]) + torch.sqrt(torch.tensor(lr)) * zetas[diagonal_mask]
+        DeltaM[non_diagonal_mask] = lr * (common_update[non_diagonal_mask] - alpha_co * model.M[non_diagonal_mask] + alpha_co * mCm[non_diagonal_mask]) + torch.sqrt(torch.tensor(lr)) * zetas[non_diagonal_mask]
 
         #DeltaW = lr * torch.mm(x_curr.t(), model(x_curr) - model.W) + torch.sqrt(torch.tensor(lr)) * xis
         DeltaW = lr * (torch.matmul(Y_WM.t(), x_curr) / x_curr.size(0) - model.W) + torch.sqrt(torch.tensor(lr)) * xis
-        DeltaM = lr * (torch.matmul(Y_WM.t(), Y_WM) / Y_WM.size(0) - model.M) + torch.sqrt(torch.tensor(lr)) * zetas
+        #DeltaM = lr * (torch.matmul(Y_WM.t(), Y_WM) / Y_WM.size(0) - model.M) + torch.sqrt(torch.tensor(lr)) * zetas
         if model_type == 'nonlinear':
             Deltab = lr * (np.sqrt(alpha_nl) * torch.mean(Y_WM, dim=0) - model.b) #+ torch.sqrt(torch.tensor(lr)) * xi_b
 
@@ -442,8 +442,8 @@ def Simulate_Drift_NL(X, stdW , stdM, rho, dt, model, input_dim, output_dim, lr,
 ##############################################################################
 ##############################################################################
 
-input_dim = 5#3  # Example input dimension
-output_dim = 100  # Example output dimension
+input_dim = 1#3  # Example input dimension
+output_dim = 2  # Example output dimension
 tot_iter = 50000  # Maximum iterations
 dt = 0.05
 lr = 0.2
@@ -458,11 +458,6 @@ beta_1 = 0.0001
 beta_2 = 0.0001
 
 model = PlaceCellNetwork(input_dim, output_dim, tot_iter, dt, model_type, alpha_co, alpha_nl, beta_1, beta_2)
-X = torch.randn(num_samples, input_dim, device=device)  # Example input data
-X[:,0]+=1
-X[:,1]+=2
-X[:,2]+=3
-X[:,3]+=4
 
 X = torch.randn(num_samples, input_dim, device=device)
 for ix in range(input_dim):
@@ -532,13 +527,13 @@ C_target = create_block_correlation_matrix(output_dim, rho)
 
 stdWs = torch.linspace(0.1, 0.2, 2, device=device)
 stdMs = torch.linspace(0.1, 0.2, 2, device=device)
-rhos = torch.linspace(0, 0.2, 5, device=device)
+rhos = torch.linspace(0, 0.6, 30, device=device)
 dimensions = np.arange(5, 50, 3)
 
 
 # Prepare to store the results
 #Ds_results = np.zeros((len(stdWs), len(stdMs), len(rhos)))
-Ds_results = torch.zeros((len(dimensions), len(stdMs)), device=device)
+Ds_results = torch.zeros((len(rhos), len(stdMs)), device=device)
 entropy_results = torch.zeros_like(Ds_results)
 #Similarity_results = torch.zeros((len(dimensions), len(stdMs), Similarity0.shape[0], Similarity0.shape[1], Similarity0.shape[2]), device=device)
 
@@ -583,8 +578,6 @@ for i, rho in enumerate(rhos):
             plt.plot(y_WM_np[ii, ::100], label=f'Output dimension {ii+1}', alpha=0.6)
         #plt.legend()
         plt.show(block=False)
-
-
 
 if 1==2:
 
