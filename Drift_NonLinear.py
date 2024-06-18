@@ -6,56 +6,30 @@ from scipy.spatial.distance import pdist, squareform
 from scipy.cluster.hierarchy import linkage, optimal_leaf_ordering, leaves_list
 import numpy as np
 from scipy.optimize import curve_fit
-import sys
 from scipy.spatial import ConvexHull, qhull
 from scipy.stats import entropy
-from IPython.display import display, clear_output
-import time 
 import pdb
-
-# OneDrive branch v0504
+import time
 
 # Check if CUDA is available and set the default tensor type
-if torch.cuda.is_available():
-    device = torch.device("cuda")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+torch.backends.cudnn.benchmark = True
+
+if device.type == 'cuda':
     print("Using CUDA on GPU")
 else:
-    device = torch.device("cpu")
     print("CUDA not available, using CPU")
 
 ##############################################################################
 ##############################################################################
 
 def estimate_volume_convex_hull(points):
-
     try:
         hull = ConvexHull(points)
         return hull.volume
-    except scipy.spatial.qhull.QhullError:
+    except qhull.QhullError:
         print("Error computing the convex hull. The points may be collinear or not span the entire space.")
         return None
-
-def compute_diffusion_constantsI(Y, plot=False):
-    if isinstance(Y, torch.Tensor):
-        #Y = Y.detach().numpy()
-        Y = Y.cpu().detach().numpy()  # Ensure tensor is on CPU and converted to numpy
-
-    components, time_points = Y.shape  # Extract dimensions
-
-    def linear_fit(t, D):
-        return 2 * D * t
-    Ds = np.zeros(components)
-    for component in range(components):
-        Y_component = Y[component,:]         
-        MSD = np.square(Y_component - Y_component[0])
-        time_steps = np.arange(time_points)
-        params, _ = curve_fit(linear_fit, time_steps, MSD)
-        
-        Ds[component] = params[0] #np.mean(MSD) #
-
-    Dsm=np.mean(Ds)
-    
-    return Dsm
 
 def compute_diffusion_constants(Y, plot=False):
     Y = Y.detach()  # Detach Y for calculations without gradient tracking
@@ -67,10 +41,6 @@ def compute_diffusion_constants(Y, plot=False):
         Y_component = Y[component, :]
         MSD = torch.pow(Y_component - Y_component[0], 2)  # Mean Squared Displacement calculation
         time_steps = torch.arange(time_points, device=Y.device).float()  # Time steps
-        # Linear fit function: y = 2Dt
-        # Fitting y = 2Dt using least squares to find D
-        # Assume y = A * x + B where A should be 2D and B ~ 0
-        # Using simple linear regression formula D = (sum(xi*yi) - n*xmean*ymean) / (sum(xi^2) - n*xmean^2)
         xmean = time_steps.mean()
         ymean = MSD.mean()
         A = (torch.sum(time_steps * MSD) - time_points * xmean * ymean) / (torch.sum(time_steps ** 2) - time_points * xmean ** 2)
@@ -81,12 +51,10 @@ def compute_diffusion_constants(Y, plot=False):
     Dsm = Ds.mean().item()  # Mean of diffusion constants across all components
     return Ds
 
-
 def compute_entropy_from_histogram(distances, bins='auto'):
     y = np.zeros(distances.shape[0])
 
     for i in range(distances.shape[0]):
-        # Ensure the tensor is moved to the CPU and converted to NumPy before processing with np.histogram
         hist, _ = np.histogram(distances[i, :].cpu().numpy(), bins=bins, density=True)
         prob_dist = hist / np.sum(hist)
         y[i] = entropy(prob_dist)
@@ -103,44 +71,37 @@ def generate_PSP_input_torch(input_cov_eigens, input_dim, num_samples):
     X = torch.distributions.MultivariateNormal(mean, C).sample((num_samples,))
     return X
 
-
 def create_block_correlation_matrix(output_dim, rho):
-    # Initialize the block matrix
     block_size = output_dim // 2  # Size of each block
     block_matrix = torch.zeros((output_dim, output_dim))
 
-    # Fill diagonal blocks with rho
     block_matrix[:block_size, :block_size].fill_(rho)
     block_matrix[block_size:, block_size:].fill_(rho)
 
-    # Set the diagonal elements of the entire matrix to 1
     torch.diagonal(block_matrix).fill_(1)
-
     return block_matrix
+
 ##############################################################################
 ##############################################################################
-###  1- dimensionality  2- conjunctiveness 3- feedforward corr vs recurrent corr.
 
 class PlaceCellNetwork(nn.Module):
-    def __init__(self, input_dim, output_dim, MaxIter, dt,  model_type, alpha_co, alpha_nl,  lbd1, lbd2):
+    def __init__(self, input_dim, output_dim, MaxIter, dt, model_type, alpha_co, alpha_nl, lbd1, lbd2):
         super(PlaceCellNetwork, self).__init__()
         self.W = nn.Parameter(torch.randn(output_dim, input_dim, device=device))
         self.M = nn.Parameter(torch.eye(output_dim, device=device))
         
         if model_type == 'nonlinear':
             self.b = nn.Parameter(torch.zeros(output_dim, device=device))
-            self.alpha = torch.tensor(alpha, dtype=torch.float32)  # Only used in nonlinear mode
+            self.alpha = torch.tensor(alpha_nl, dtype=torch.float32)  # Only used in nonlinear mode
             self.lbd1 = lbd1
             self.lbd2 = lbd2
             self.reciprocal_diag_M = 1 / (self.lbd2 + torch.diag(self.M))  # Precompute the reciprocal if possible
-
         else:
             self.b = None
             self.alpha_nl = None
             self.lbd1 = None
             self.lbd2 = None
             self.reciprocal_diag_M = None
-
 
         self.alpha_co = alpha_co
         self.MaxIter = MaxIter
@@ -158,64 +119,33 @@ class PlaceCellNetwork(nn.Module):
         MO = self.M - torch.diag_embed(self.diag_M)
 
         if self.model_type == 'linear':
-            Wx = torch.mm(X, self.W.t())
             Y = torch.mm(Wx, torch.inverse(self.M))
         else:
             for count in range(self.MaxIter):
                 M_Y = torch.mm(Yold, MO)
-                dt = self.dt  # Time step might be adaptive based on some criterion, simplifying here
                 du = -Yold + Wx - torch.sqrt(self.alpha) * self.b - M_Y
-                #uy = Y + dt * du
                 Y = Yold + self.dt * (du - self.lbd1)
-                #Y = torch.maximum((uy - self.lbd1) / (self.lbd2 + diag_M), torch.zeros_like(uy)) 
                 Y *= self.reciprocal_diag_M  # Using precomputed reciprocal
                 Y = torch.maximum(Y, torch.zeros_like(Y))
-                # Reduce synchronization by moving error computation outside the loop or less frequent
-                if count % 100 == 0:  # Check convergence every 10 iterations to reduce overhead
-                    err = torch.norm(Y - Yold) / (torch.norm(Yold) + 1e-10) / dt
+                if count % 100 == 0:  # Check convergence every 100 iterations to reduce overhead
+                    err = torch.norm(Y - Yold) / (torch.norm(Yold) + 1e-10) / self.dt
                     if err.item() < 1e-4:
                         break            
-                if torch.max(Y)>1e12:
+                if torch.max(Y) > 1e12:
                     pdb.set_trace()  # Execution will pause here, and the debugger will start
-
-            Yold = Y.clone()
+                Yold = Y.clone()
 
         return Y
 
-### o2
-class SimilarityMatchingNetwork_WM(nn.Module):
-    def __init__(self, input_dim, output_dim, device):
-        super(SimilarityMatchingNetwork_WM, self).__init__()
-        self.W = nn.Parameter(torch.randn(output_dim, input_dim, device=device))
-        self.M = nn.Parameter(torch.eye(output_dim, device=device))
-        
-    def forward(self, x):
-        M_noisy = self.M
-        W_noisy = self.W
-        I = torch.eye(M_noisy.size(0), device=device)
-
-        det_A = torch.det(M_noisy)
-        is_singular = torch.isclose(det_A, torch.tensor(0.0, device=device))
-
-        if not is_singular:
-            M_inv = torch.inverse(M_noisy)
-            print(22)
-        else:
-            M_inv = torch.full(M_noisy.shape, float('nan'), device=device)
-            print(33)
-
-        # Apply transformation using temporary noisy M
-        y = M_inv @ W_noisy @ x.t()
-        return y.t()
 ##############################################################################
 ##############################################################################
 
-def similarity_matching_cost_0(x, y, alpha, beta_1 , beta_2):
-    T = x.shape[0]  # Number of samples
+def similarity_matching_cost_0(x, y, alpha, beta_1, beta_2):
+    T = x.shape[0]
     S_x = torch.matmul(x, x.t())
     S_y = torch.matmul(y, y.t())
     cost = torch.mean((S_x - S_y) ** 2) / (T ** 2)
-    E = torch.ones((T, T), device=x.device)  # Ensure E is on the same device as x and y
+    E = torch.ones((T, T), device=x.device)
 
     alpha_E = alpha**2 * E
     cost = torch.mean((S_x - S_y - alpha_E) ** 2) / (T ** 2)
@@ -227,18 +157,17 @@ def similarity_matching_cost_0(x, y, alpha, beta_1 , beta_2):
     return cost
 
 def similarity_matching_cost(x, model, C, alpha=0.0, beta_1=0.0, beta_2=0.0):
-    T = x.shape[0]  # Number of samples
+    T = x.shape[0]
     Y = model(x)
     cost = similarity_matching_cost_0(x, Y, alpha, beta_1, beta_2)
 
     M = model.M
     M_diag = torch.diag(M)
-    M_ii = M_diag.unsqueeze(1)  # Make it a column vector
-    M_jj = M_diag.unsqueeze(0)  # Make it a row vector
+    M_ii = M_diag.unsqueeze(1)
+    M_jj = M_diag.unsqueeze(0)
     E = torch.zeros_like(M)
     mask = torch.eye(M.size(0), dtype=torch.bool)
-    #### this is wrong should be corrected, the abs should be removed
-    E[~mask] = (M[~mask] / (torch.sqrt(torch.abs(M_ii)) * torch.sqrt(torch.abs(M_jj)))[~mask]) #- (C[~mask])
+    E[~mask] = (M[~mask] / (torch.sqrt(torch.abs(M_ii)) * torch.sqrt(torch.abs(M_jj)))[~mask])
 
     cost += alpha * torch.norm(E, 'fro')
 
@@ -250,20 +179,13 @@ def similarity_matching_cost(x, model, C, alpha=0.0, beta_1=0.0, beta_2=0.0):
 ##############################################################################
 ##############################################################################
 
-def Simulate_Drift_NL(X, stdW , stdM, rho, dt, model, input_dim, output_dim, lr, model_type, alpha_co, alpha_nl, beta_1, beta_2):
-
+def Simulate_Drift_NL(X, stdW, stdM, rho, dt, model, input_dim, output_dim, lr, model_type, alpha_co, alpha_nl, beta_1, beta_2):
     X = X.to(device)
     model.to(device)
 
-    #plt.ion()  # Turn on interactive plotting
-    #fig, ax = plt.subplots()  # Create a figure and axes object
-
-    #stdW = syn_noise_std
-    #stdM = syn_noise_std
-    num_sel = 500 # randomly selected samples used to calculate the drift and diffusion constants
-    step = 10#10    # store every 10 updates
+    num_sel = 500
+    step = 10
     time_points = round(tot_iter / step)
-    #sel_inx = np.random.permutation(num_samples)[:num_sel].to(device)
     sel_inx = torch.randperm(num_samples)[:num_sel].to(device)
 
     Yt_WM = torch.zeros(output_dim, time_points, num_sel, device=device)
@@ -271,73 +193,23 @@ def Simulate_Drift_NL(X, stdW , stdM, rho, dt, model, input_dim, output_dim, lr,
     volume_v = torch.zeros(time_points, device=device)
     Similarity = torch.zeros(time_points, output_dim, output_dim, device=device)
 
-    #rho = 0.0
-    # C_target_np = np.array([[1, rho, rho], [rho, 1, rho], [rho, rho, 1]])  # Target correlation matrix
-    # C_target = torch.tensor(C_target_np, dtype=torch.float32)
-    # C_target_np = torch.full((output_dim, output_dim), rho, device=device)
-    # noise = torch.randn(output_dim, output_dim, device=device) * 0.001
-    # noise.fill_diagonal_(0)  # Zero out diagonal noise
-    # C_target_np += noise
-    # C_target_np.fill_diagonal_(1)
-    # C_target = C_target_np.triu() + C_target_np.triu(1).transpose(0, 1) - torch.diag(torch.diag(C_target_np))
-
-
-    # C_target = torch.full((output_dim, output_dim), -rho, dtype=torch.float32)
-    # noise = torch.randn(output_dim, output_dim) * 0.001
-    # torch.diagonal(noise).fill_(0)  # Zero out diagonal noise
-    # C_target += noise
-    # torch.diagonal(C_target).fill_(1)
-    # mask = ~torch.eye(output_dim, dtype=bool)
-    # C_target[mask] *= -1
-    # upper_tri_A = torch.triu(C_target)
-    # C_target = upper_tri_A + upper_tri_A.T - torch.diag(torch.diag(upper_tri_A))
-
     C_target = create_block_correlation_matrix(output_dim, rho)
-
-    # Perform Cholesky decomposition
-    #L = torch.linalg.cholesky(C_target)
-
-    #model_WM = SimilarityMatchingNetwork_WM(input_dim, output_dim)
-    #optimizer_WM = torch.optim.SGD(model.parameters(), lr=lr)
-    #DeltaWM_W_manual = torch.nn.Parameter(torch.randn(output_dim, input_dim).to(device))
-    #DeltaWM_M_manual = torch.nn.Parameter(torch.eye(output_dim).to(device))
     nn = 0
 
-    #fig, ax = plt.subplots()    
     start_time = time.time()
-    for epoch in range(tot_iter):  # Number of epochs
-
-        if epoch % 1000 ==1:
+    for epoch in range(tot_iter):
+        if epoch % 1000 == 1:
             start_time = time.time()
-            #ax.clear()  # Clear the axes to update the plot
-            #ax.plot(model.W[:,1].detach().cpu().numpy(), model.W[:,2].detach().cpu().numpy(), 'b.')  # 'b.' plots a blue dot
-            #plt.draw()  # Redraw the current figure
-            #plt.pause(1)  # Pause for a bit to see the update
-            #pdb.set_trace()  # Execution will pause here
 
-        # Randomly select one sample
-        curr_inx = torch.randint(0, num_samples, (500,), device=device) #torch.tensor([1])
-        x_curr = X[curr_inx,:].to(device)  # Current input sample
+        curr_inx = torch.randint(0, num_samples, (500,), device=device)
+        x_curr = X[curr_inx,:].to(device)
         Y_WM = model(x_curr)
 
         xis = torch.randn_like(model.W, device=device) * stdW
         zetas = torch.randn_like(model.M, device=device) * stdM
-        #xi_b = torch.randn_like(model.b) * stdM * 0
 
-        #zetas_uncorrelated = torch.randn_like(model.M) * stdM
-        #zetas = L @ zetas_uncorrelated
-
-        # M = model.M
-        # C = C_target
-        # M_diag = torch.diag(M)
-        # M_ii = M_diag.unsqueeze(1) 
-        # M_jj = M_diag.unsqueeze(0) 
-        # E = torch.zeros_like(M)
-        # mask = torch.eye(M.size(0), dtype=torch.bool)
-        # E[~mask] = (M[~mask] / (M_ii * M_jj)[~mask]) - (C[~mask] / (torch.sqrt(M_ii) * torch.sqrt(M_jj))[~mask])
-        # c_alpha = 0.0
-        # DeltaWM_M_manual = dt * (torch.matmul(Y_WM.t(), Y_WM) / Y_WM.size(0) - model.M- c_alpha * E)+ torch.sqrt(torch.tensor(dt)) * zetas  # y_i y_j - M_ij torch.sqrt(torch.tensor(dt))
-        m = torch.sqrt(torch.diag(model.M)).unsqueeze(1)  # Get the diagonal of M
+        m = torch.sqrt(torch.diag(model.M)).unsqueeze(1)
+        mCm = m
         mCm = m.T * C_target * m # C needs to be defined as the symmetric matrix with ones on its diagonal
           
         # M = model.M
@@ -352,90 +224,44 @@ def Simulate_Drift_NL(X, stdW , stdM, rho, dt, model, input_dim, output_dim, lr,
         non_diagonal_mask = ~diagonal_mask
         common_update = torch.matmul(Y_WM.t(), Y_WM) / Y_WM.size(0) - model.M
         DeltaM = torch.zeros_like(model.M)
+        diagonal_mask = torch.eye(model.M.shape[0], dtype=bool)
+        non_diagonal_mask = ~diagonal_mask
         DeltaM[diagonal_mask] = lr * (common_update[diagonal_mask]) + torch.sqrt(torch.tensor(lr)) * zetas[diagonal_mask]
         DeltaM[non_diagonal_mask] = lr * (common_update[non_diagonal_mask] - alpha_co * model.M[non_diagonal_mask] + alpha_co * mCm[non_diagonal_mask]) + torch.sqrt(torch.tensor(lr)) * zetas[non_diagonal_mask]
-
-        #DeltaW = lr * torch.mm(x_curr.t(), model(x_curr) - model.W) + torch.sqrt(torch.tensor(lr)) * xis
         DeltaW = lr * (torch.matmul(Y_WM.t(), x_curr) / x_curr.size(0) - model.W) + torch.sqrt(torch.tensor(lr)) * xis
-        #DeltaM = lr * (torch.matmul(Y_WM.t(), Y_WM) / Y_WM.size(0) - model.M) + torch.sqrt(torch.tensor(lr)) * zetas
+
         if model_type == 'nonlinear':
-            Deltab = lr * (np.sqrt(alpha_nl) * torch.mean(Y_WM, dim=0) - model.b) #+ torch.sqrt(torch.tensor(lr)) * xi_b
-
-
-
-        # DeltaW = torch.where(torch.isinf(DeltaW), torch.tensor(0.0), DeltaW)
-        # DeltaM = torch.where(torch.isinf(DeltaM), torch.tensor(0.0), DeltaM)
-        # Deltab = torch.where(torch.isinf(Deltab), torch.tensor(0.0), Deltab)
- 
-        # DeltaW = torch.where(torch.isnan(DeltaW), torch.tensor(0.0), DeltaW)
-        # DeltaM = torch.where(torch.isnan(DeltaM), torch.tensor(0.0), DeltaM)
-        # Deltab = torch.where(torch.isnan(Deltab), torch.tensor(0.0), Deltab)
-
-
-        #user_input = input("Enter 'I' to enter debug mode, or any other key to continue: ")
-        if torch.isnan(torch.mean(DeltaW.detach()) + torch.mean(DeltaM.detach()))==1:#user_input.upper() == 'I':
-            print("Entering debug mode...")
-            pdb.set_trace()  # Execution will pause here, and the debugger will start
+            Deltab = lr * (torch.sqrt(alpha_nl) * torch.mean(Y_WM, dim=0) - model.b)
 
         with torch.no_grad():
             if torch.all(torch.isfinite(DeltaW)) and torch.all(torch.isfinite(DeltaM)):
                 model.W += DeltaW
                 model.M += DeltaM
-                #mm = torch.sqrt(torch.diag(torch.diag(model.M)))
-                #mmm = torch.matmul(torch.matmul(mm, C_target),mm)
-                #model.M[non_diagonal_mask] = mmm[non_diagonal_mask] + torch.sqrt(torch.tensor(lr)) * zetas[non_diagonal_mask]
-                #pdb.set_trace()  # Execution will pause here, and the debugger will start
-
                 if model_type == 'nonlinear':
                     model.b += Deltab
-            else:
-                print(DeltaM)
-                #print(DeltaM)
-                #print(Deltab)
 
-        if epoch % step == 0: #and epoch>1000:
-            y=model(X[sel_inx,:])
-            yx =y.detach()
-#            pdb.set_trace()
-            Yt_WM[:,nn,:] = yx.t()
-            nn += 1
+            if epoch % step == 0:
+                y = model(X[sel_inx,:])
+                yx = y.detach()
+                Yt_WM[:,nn,:] = yx.t()
+                nn += 1
 
-        # cost = similarity_matching_cost(x_curr, model, C_target, alpha, beta_1, beta_2)
-        # ax.plot(epoch, cost.detach().numpy(), 'b.')  # 'b.' plots a blue dot
-        # ax.set_title('Cost over Epochs')
-        # ax.set_xlabel('Epoch')
-        # ax.set_ylabel('Cost')
-        # #plt.pause(0.01)
-        # plt.draw
-
-        if epoch % 1000 == 0:
-            cost_WM = torch.tensor(0.000000000)# similarity_matching_cost(x_curr, model, C_target, alpha, beta_1, beta_2)
-            end_time=time.time()
-            elapsed_time = end_time - start_time
-            print(f'Cost: {cost_WM.item():.4f}, Elapsed Time: {elapsed_time:.6f} seconds, Epoch= {epoch}')
-
+            if epoch % 1000 == 0:
+                cost_WM = torch.tensor(0)
+                end_time = time.time()
+                elapsed_time = end_time - start_time
+                print(f'Cost: {cost_WM.item():.4f}, Elapsed Time: {elapsed_time:.6f} seconds, Epoch= {epoch}')
 
     for inn in range(Yt_WM.shape[2]):
-        selYInx = inn#100  # np.random.choice(range(num_sel), 1, replace=False)
+        selYInx = inn
         y_WM_np = Yt_WM[:,100:-200,selYInx]
         Ds_v[inn,:] = compute_diffusion_constants(y_WM_np, plot=False)
-        #volume_v[inn] = estimate_volume_convex_hull(y_WM_np.T)
         volume_v[inn] = compute_entropy_from_histogram(y_WM_np)
-        y_WM_np_cpu = y_WM_np.cpu().numpy()
-        similarity_matrix_np = np.matmul(y_WM_np_cpu, y_WM_np_cpu.T)
-        similarity_matrix_tensor = torch.from_numpy(similarity_matrix_np).to(device)  # Convert numpy array to tensor and move to GPU
 
-        Similarity[inn, :, :] = similarity_matrix_tensor  # Assign the tensor, which is now on the correct device
-
-    #Ds = np.mean(Ds_v,axis=0)
-    #Ds = Ds_v.mean().item()  # Compute the mean using PyTorch and convert to Python scalar
-    #entrop = np.mean(volume_v,axis=0)
     Ds_mean = Ds_v.mean()
     volume_mean = volume_v.mean()
 
-    #return Ds, entrop, Similarity, Yt_WM, model
     return Ds_mean, volume_mean, Similarity, Yt_WM, model
-
 ##############################################################################
 ##############################################################################
 #############################  MAIN PART  ####################################
@@ -444,14 +270,14 @@ def Simulate_Drift_NL(X, stdW , stdM, rho, dt, model, input_dim, output_dim, lr,
 
 input_dim = 1#3  # Example input dimension
 output_dim = 2  # Example output dimension
-tot_iter = 50000  # Maximum iterations
+tot_iter = 100000  # Maximum iterations
 dt = 0.05
-lr = 0.2
+lr = 0.05
 num_samples = 10000
 stdW = 0.01
 stdM = 0.01
 model_type='linear'
-alpha_co = 1
+alpha_co = 10
 
 alpha_nl = 0.0
 beta_1 = 0.0001
@@ -551,7 +377,7 @@ for i, rho in enumerate(rhos):
 #for i, stdW in enumerate(stdWs):
 #    for j, stdM in enumerate(stdMs):
     stdM = 0
-    stdW = 0.02#stdM
+    stdW = 0.2#stdM
     #for k, rho in enumerate(rhos):
         # if k == 0 and i == 0 and j == 0:
         #     Ds0, entropy0, Yt_WM0, model_WM0 =  Simulate_Drift_NL(X, 0, 0, rho, auto, model, input_dim, output_dim, dt, alpha, beta_1, beta_2)
