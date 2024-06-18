@@ -217,7 +217,7 @@ def Simulate_Drift(X, stdW , stdM, rho, auto, model_WM, input_dim,output_dim):
         selYInx = inn#100  # np.random.choice(range(num_sel), 1, replace=False)
         y_WM_np = Yt_WM[:,:-200,selYInx]
         Ds_v[inn] = compute_diffusion_constants(y_WM_np, plot=False)
-        volume_v[inn] = estimate_volume_convex_hull(y_WM_np.T)
+        volume_v[inn] = 0#estimate_volume_convex_hull(y_WM_np.T)
 
     Ds = torch.mean(Ds_v,axis=0)
     volume = torch.mean(volume_v,axis=0)
