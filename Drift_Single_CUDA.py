@@ -222,7 +222,7 @@ def Simulate_Drift(X, stdW, stdM, rho, auto, model_WM, input_dim, output_dim):
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")   
 input_dim = 1
 output_dim = 2
-num_samples = 10000
+num_samples = 1000
 auto = 0
 
 X = torch.randn(num_samples, input_dim, device=device)

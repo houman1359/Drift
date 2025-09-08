@@ -1,0 +1,7 @@
+# repo ignores
+FromFarhad/Results/
+FromFarhad/plot/
+FromFarhad/logs/
+FromFarhad/legacy/
+**/*.asv
+**/*.mat
