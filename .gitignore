@@ -1,7 +1,7 @@
 # Ignore archives and misc
 _misc/
 
-
+#.vscode/
 __pycache__
 # Data, results, plots, logs
 
