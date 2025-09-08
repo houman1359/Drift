@@ -2,7 +2,7 @@
 _misc/
 
 # Data, results, plots, logs
-/data/
+
 _results/
 results/
 Results/

@@ -1,4 +1,19 @@
-% Run as a function of dimension of input
+% Output dimensionality sweep (vary n)
+% PARAMETERS (edit here)
+%   m                    : fixed output dimension
+%   outputfolder         : results directory
+%   synnoise, Nparticles : noise std and #particles
+%   eta                  : learning rate / dt
+%   ns                   : grid of input dims to sweep
+%   overwrite            : skip if results exist (0/1)
+%   Nreps, base_seed     : repeats and base seed
+%   sigmaperp            : orthogonal variance scale for inputs
+%   mode                 : 'synaptic' | 'excitability'
+%   rho_noise            : synaptic equicorr coefficient
+% Notes:
+%   - To use heterogeneous/custom correlations, also set:
+%       params.noise_corr_mode / params.Cnoise / params.alpha_range
+%       params.excit_corr_mode / params.Cnoise_ex / params.alpha_ex_range
 clear all
 close all
 m = 5;

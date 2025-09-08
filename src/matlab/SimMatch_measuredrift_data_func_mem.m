@@ -1,4 +1,65 @@
-function [corefile] = SimMatch_measuredrift_data_func_mem_hs(params)
+function [corefile] = SimMatch_measuredrift_data_func_mem(params)
+% SimMatch_measuredrift_data_func_mem
+% Core engine for similarity-matching drift experiments (synaptic vs excitability).
+%
+% PARAMETERS (fields in struct `params`)
+% Required/commonly used
+%   n                : input dimension (default 10)
+%   m                : output dimension (default 20)
+%   Nparticles       : number of parallel particles/chains per chunk (default 6)
+%   synnoise         : base noise std for synaptic/excitability noise (default 1e-2)
+%   eta              : learning rate / dt (default 0.01)
+%   numtrialstims    : number of orthonormal trial stimuli (default min(m,n))
+%   npool            : number of particles concurrently simulated in a chunk (default 8)
+%   outputfolder     : directory to write .mat results (default '')
+%   overwrite        : skip writing if result exists (0/1, default 1)
+%   mode             : 'synaptic' | 'excitability' (default 'synaptic')
+%   stdZ             : noise std used in the active mode (default = synnoise)
+%   rho_noise        : equicorrelation coefficient for synaptic noise (default 0)
+%   plotflag         : whether to generate per-run plots (default 1)
+%   plotfolder       : root folder for plots (auto if empty)
+%   plotprefix       : prefix string added to plot filenames (default '')
+%   seed             : RNG seed (empty => no reset)
+%   T                : measurement horizon per particle (default 1e4)
+%   Tpretrain        : pretraining steps (default 1e5)
+%   runPretrain      : whether to run pretrain (1) or skip (0) (default 1)
+%   datatype         : 'gaussian' (placeholder for future data types)
+%   sigmapar         : parallel variance scale for top-k eigenmodes (default 1)
+%   sigmaperp        : orthogonal variance scale (default 0.05)
+%   sigmas           : explicit eigen stds vector if provided (overrides sigmapar/perp)
+%   eig_decay        : power-law decay exponent for eigenvalues lambda_i ~ i^{-eig_decay} (optional)
+%   D_eval           : vector of lags for prediction-error slope (default [1 2 5 10 20 50 100])
+%
+% Excitability-specific toggles
+%   excit_corr       : 0 => independent excitability noise; 1 => correlated (default 1)
+%   excit_rho        : equicorrelation coefficient for excitability (used when excit_corr_mode='equicorr')
+%
+% Correlation structure controls (synaptic)
+%   noise_corr_mode  : 'equicorr' | 'matrix' | 'hetero' (default 'equicorr')
+%     equicorr  -> C = (1-rho) I + rho 11^T, with rho = rho_noise
+%     matrix    -> provide custom SPD correlation matrix in params.Cnoise (m x m)
+%     hetero    -> per-neuron alpha_i ~ U(alpha_range); C = alpha alpha^T + diag(1 - alpha.^2)
+%   Cnoise           : custom correlation matrix for synaptic noise (m x m, SPD)
+%   alpha_range      : [a_lo a_hi] range for heterogeneous synaptic correlations (default [0 0])
+%
+% Correlation structure controls (excitability)
+%   excit_corr_mode  : 'match' | 'equicorr' | 'matrix' | 'hetero' (default 'match')
+%     match     -> copy synaptic structure
+%     equicorr  -> use equicorr with rho = excit_rho (or rho_noise if empty)
+%     matrix    -> provide custom SPD correlation matrix in params.Cnoise_ex
+%     hetero    -> per-neuron alpha_ex_i ~ U(alpha_ex_range); same construction as synaptic
+%   Cnoise_ex        : custom correlation matrix for excitability noise (m x m, SPD)
+%   alpha_ex_range   : [a_lo a_hi] range for heterogeneous excitability correlations (default [0 0])
+%
+% OUTPUTS (in saved .mat file)
+%   Ds                        : autocorr decay slopes per stimulus
+%   pair_* metrics            : drift statistics (signed, absolute, increment variants)
+%   pair_signal_corrs         : per-pair signal correlations (pretraining window)
+%   pair_noise_corrs          : legacy pretraining-window noise correlations
+%   pair_noise_corrs_emp      : empirical residual noise correlations (Fisher-z averaged)
+%   pred_mse, pred_mse_slope  : prediction-error vs lag and its slope
+%   Cnoise_used, Cnoise_ex_used, alpha_syn, alpha_ex : correlation structures actually used
+%
 if nargin < 1
     params = [];
 end
@@ -24,6 +85,13 @@ if isfield(params,'npool'); npool=params.npool; else npool=8; end
 if isfield(params,'rho_noise'); rho_noise=params.rho_noise; else rho_noise=0; end
 if isfield(params,'excit_corr'); excit_corr=params.excit_corr; else excit_corr=1; end
 if isfield(params,'excit_rho'); excit_rho=params.excit_rho; else excit_rho=[]; end
+% New: correlation structure controls
+if isfield(params,'noise_corr_mode'); noise_corr_mode = params.noise_corr_mode; else noise_corr_mode = 'equicorr'; end % 'equicorr'|'matrix'|'hetero'
+if isfield(params,'Cnoise'); Cnoise_param = params.Cnoise; else Cnoise_param = []; end % custom correlation (m x m)
+if isfield(params,'alpha_range'); alpha_range = params.alpha_range; else alpha_range = [0.0 0.0]; end % for 'hetero': per-neuron alpha in [a_lo,a_hi]
+if isfield(params,'excit_corr_mode'); excit_corr_mode = params.excit_corr_mode; else excit_corr_mode = 'match'; end % 'match'|'equicorr'|'matrix'|'hetero'
+if isfield(params,'Cnoise_ex'); Cnoise_ex_param = params.Cnoise_ex; else Cnoise_ex_param = []; end
+if isfield(params,'alpha_ex_range'); alpha_ex_range = params.alpha_ex_range; else alpha_ex_range = [0.0 0.0]; end
 if isfield(params,'eig_decay'); eig_decay=params.eig_decay; else eig_decay=[]; end
 if isfield(params,'D_eval'); D_eval = params.D_eval; else D_eval = [1 2 5 10 20 50 100]; end
 if isfield(params,'plotfolder'); plotfolder = params.plotfolder; else plotfolder = ''; end
@@ -90,26 +158,95 @@ learnRate = eta;
 dt = learnRate;
 stdW = synnoise;
 stdM = synnoise;
-% Build correlated noise Cholesky across output neurons
+% Build correlated noise Cholesky across output neurons (synaptic)
 rho_min = -1/(output_dim-1) + 1e-6;
 rho_eff = min(max(rho_noise,rho_min),0.99);
-Cnoise = (1-rho_eff)*eye(output_dim) + rho_eff*ones(output_dim);
-try
-    Lnoise = chol(Cnoise,'lower');
-catch
-    Lnoise = chol(Cnoise + 1e-8*eye(output_dim),'lower');
+Lnoise = [];
+Cnoise_used = [];
+alpha_syn = [];
+switch lower(noise_corr_mode)
+    case 'matrix'
+        if ~isempty(Cnoise_param)
+            Cnoise_used = Cnoise_param;
+        else
+            Cnoise_used = (1-rho_eff)*eye(output_dim) + rho_eff*ones(output_dim);
+        end
+        try
+            Lnoise = chol(Cnoise_used,'lower');
+        catch
+            Lnoise = chol(Cnoise_used + 1e-8*eye(output_dim),'lower');
+        end
+    case 'hetero'
+        a_lo = max(0.0, min(alpha_range));
+        a_hi = min(0.999, max(alpha_range));
+        if a_hi < a_lo; tmp=a_lo; a_lo=a_hi; a_hi=tmp; end
+        alpha_syn = a_lo + (a_hi - a_lo)*rand(output_dim,1);
+        % Correlation with heterogeneous pairwise values: C = diag(alpha) 11^T diag(alpha) + diag(1-alpha.^2)
+        Cnoise_used = (alpha_syn*alpha_syn');
+        Cnoise_used = Cnoise_used + diag(1 - alpha_syn.^2);
+        try
+            Lnoise = chol(Cnoise_used,'lower');
+        catch
+            Lnoise = chol(Cnoise_used + 1e-8*eye(output_dim),'lower');
+        end
+    otherwise % 'equicorr'
+        Cnoise_used = (1-rho_eff)*eye(output_dim) + rho_eff*ones(output_dim);
+        try
+            Lnoise = chol(Cnoise_used,'lower');
+        catch
+            Lnoise = chol(Cnoise_used + 1e-8*eye(output_dim),'lower');
+        end
 end
-% Excitability noise correlation (can differ from synaptic rho)
-if isempty(excit_rho)
-    rho_ex = rho_eff; % match synaptic by default
-else
-    rho_ex = min(max(excit_rho,rho_min),0.99);
-end
-Cnoise_ex = (1-rho_ex)*eye(output_dim) + rho_ex*ones(output_dim);
-try
-    Lnoise_ex = chol(Cnoise_ex,'lower');
-catch
-    Lnoise_ex = chol(Cnoise_ex + 1e-8*eye(output_dim),'lower');
+
+% Excitability noise correlation (can differ from synaptic)
+Lnoise_ex = [];
+Cnoise_ex_used = [];
+alpha_ex = [];
+switch lower(excit_corr_mode)
+    case 'match'
+        % Use same structure as synaptic
+        Lnoise_ex = Lnoise; Cnoise_ex_used = Cnoise_used; alpha_ex = alpha_syn;
+    case 'matrix'
+        if ~isempty(Cnoise_ex_param)
+            Cnoise_ex_used = Cnoise_ex_param;
+        else
+            % default to equicorr with rho_ex
+            if isempty(excit_rho)
+                rho_ex = rho_eff;
+            else
+                rho_ex = min(max(excit_rho,rho_min),0.99);
+            end
+            Cnoise_ex_used = (1-rho_ex)*eye(output_dim) + rho_ex*ones(output_dim);
+        end
+        try
+            Lnoise_ex = chol(Cnoise_ex_used,'lower');
+        catch
+            Lnoise_ex = chol(Cnoise_ex_used + 1e-8*eye(output_dim),'lower');
+        end
+    case 'hetero'
+        a_lo = max(0.0, min(alpha_ex_range));
+        a_hi = min(0.999, max(alpha_ex_range));
+        if a_hi < a_lo; tmp=a_lo; a_lo=a_hi; a_hi=tmp; end
+        alpha_ex = a_lo + (a_hi - a_lo)*rand(output_dim,1);
+        Cnoise_ex_used = (alpha_ex*alpha_ex');
+        Cnoise_ex_used = Cnoise_ex_used + diag(1 - alpha_ex.^2);
+        try
+            Lnoise_ex = chol(Cnoise_ex_used,'lower');
+        catch
+            Lnoise_ex = chol(Cnoise_ex_used + 1e-8*eye(output_dim),'lower');
+        end
+    otherwise % 'equicorr'
+        if isempty(excit_rho)
+            rho_ex = rho_eff; % match synaptic by default
+        else
+            rho_ex = min(max(excit_rho,rho_min),0.99);
+        end
+        Cnoise_ex_used = (1-rho_ex)*eye(output_dim) + rho_ex*ones(output_dim);
+        try
+            Lnoise_ex = chol(Cnoise_ex_used,'lower');
+        catch
+            Lnoise_ex = chol(Cnoise_ex_used + 1e-8*eye(output_dim),'lower');
+        end
 end
 if runPretrain == 1
     Ms = zeros(output_dim,output_dim,tot_inital);
@@ -168,7 +305,10 @@ pair_abs_drift_meanabs = zeros(m*(m-1)/2,1); % E[ | |h_i| - |h_j| | ]
 pair_drift_incr_vars = zeros(m*(m-1)/2,1);
 pair_abs_drift_incr_meanabs = zeros(m*(m-1)/2,1);
 pair_signal_corrs = zeros(m*(m-1)/2,1);
-pair_noise_corrs = zeros(m*(m-1)/2,1);
+pair_noise_corrs = zeros(m*(m-1)/2,1); % (legacy: pretrain-based)
+% New: empirical residual noise correlations (Fisher-z averaged across chunks and stimuli)
+pair_noise_corrs_emp_sum = zeros(m*(m-1)/2,1);
+pair_noise_corrs_emp_count = 0;
 pair_idx = 1;
 for ich = 1:Nchunks
     Rauto_chunk= zeros(npool,numtrialstims,T);
@@ -288,6 +428,21 @@ for ich = 1:Nchunks
                 pair_idx_local = pair_idx_local + 1;
             end
         end
+        % Empirical residual noise correlation for this stimulus (chunk-level)
+        % Center across time, compute corrcoef, accumulate Fisher-z
+        hst = squeeze(hs_mean_chunk(:,:,st)); % m x T
+        hst = hst - mean(hst,2);
+        Cr = corrcoef(hst'); % m x m
+        % collect upper triangle into vector in the same pair order
+        pair_idx_local = 1;
+        for i = 1:m
+            for j = i+1:m
+                r_ij = max(min(Cr(i,j), 0.999999), -0.999999);
+                pair_noise_corrs_emp_sum(pair_idx_local) = pair_noise_corrs_emp_sum(pair_idx_local) + atanh(r_ij);
+                pair_idx_local = pair_idx_local + 1;
+            end
+        end
+        pair_noise_corrs_emp_count = pair_noise_corrs_emp_count + 1;
     end
 end
 Rautomean = Rautomean/Nchunks; flucs = flucs/Nchunks;
@@ -303,23 +458,29 @@ end
 if exist('pair_abs_drift_incr_meanabs_sum','var')
     pair_abs_drift_incr_meanabs = pair_abs_drift_incr_meanabs_sum / (Nchunks * numtrialstims);
 end
-% Fill pair correlation vectors once
+% Fill pair correlation vectors (signal from pretraining window; noise: both legacy (pretrain) and empirical)
 pair_signal_corrs = zeros(m*(m-1)/2,1);
-pair_noise_corrs = zeros(m*(m-1)/2,1);
+pair_noise_corrs = zeros(m*(m-1)/2,1); % legacy: from pretraining window
+pair_noise_corrs_emp = zeros(m*(m-1)/2,1);
 pair_idx = 1;
 for i = 1:m
     for j = i+1:m
         pair_signal_corrs(pair_idx) = SignalCorr(i,j);
         pair_noise_corrs(pair_idx) = AveNoiseCorr(i,j);
+        if pair_noise_corrs_emp_count > 0
+            pair_noise_corrs_emp(pair_idx) = tanh( pair_noise_corrs_emp_sum(pair_idx) / pair_noise_corrs_emp_count );
+        else
+            pair_noise_corrs_emp(pair_idx) = NaN;
+        end
         pair_idx = pair_idx + 1;
     end
 end
 % Plot for point 3
 if plotflag == 1
     fig_corr = figure; subplot(2,2,1); scatter(pair_signal_corrs, pair_drift_vars, 'filled'); xlabel('Signal Corr'); ylabel('Pair Drift Var');
-    subplot(2,2,2); scatter(pair_noise_corrs, pair_drift_vars, 'filled'); xlabel('Noise Corr'); ylabel('Pair Drift Var');
-    subplot(2,2,3); scatter(pair_noise_corrs, pair_abs_drift_meanabs, 'filled'); xlabel('Noise Corr'); ylabel('E[||h_i|-|h_j||]');
-    subplot(2,2,4); scatter(pair_noise_corrs, pair_abs_drift_incr_meanabs, 'filled'); xlabel('Noise Corr'); ylabel('E[||Δh_i|-|Δh_j||]');
+    subplot(2,2,2); scatter(pair_noise_corrs_emp, pair_drift_vars, 'filled'); xlabel('Empirical Noise Corr'); ylabel('Pair Drift Var');
+    subplot(2,2,3); scatter(pair_noise_corrs_emp, pair_abs_drift_meanabs, 'filled'); xlabel('Empirical Noise Corr'); ylabel('E[||h_i|-|h_j||]');
+    subplot(2,2,4); scatter(pair_noise_corrs_emp, pair_abs_drift_incr_meanabs, 'filled'); xlabel('Empirical Noise Corr'); ylabel('E[||Δh_i|-|Δh_j||]');
     sgtitle('Drift metrics vs correlations');
     saveas(fig_corr, fullfile(plotfolder, 'drift_vs_correlations.png'));
 end
@@ -395,7 +556,11 @@ else
     pred_mse_neuron = [];
     pred_mse_slope = NaN; pred_mse_slope_se = NaN; pred_mse_slope_neuron = [];
 end
-save(filename,'Ds','flucs','Rautomean','trialstims','params','T','initial_pspErr','sigmas','eta','Nparticles','pair_drift_vars','pair_abs_drift_vars','pair_abs_drift_meanabs','pair_drift_incr_vars','pair_abs_drift_incr_meanabs','pair_signal_corrs','pair_noise_corrs','rho_noise','eig_decay','seed','D_eval','pred_mse','pred_mse_neuron','pred_mse_slope','pred_mse_slope_se','pred_mse_slope_neuron');
+save(filename,'Ds','flucs','Rautomean','trialstims','params','T','initial_pspErr','sigmas','eta','Nparticles',...
+    'pair_drift_vars','pair_abs_drift_vars','pair_abs_drift_meanabs','pair_drift_incr_vars','pair_abs_drift_incr_meanabs',...
+    'pair_signal_corrs','pair_noise_corrs','pair_noise_corrs_emp',...
+    'rho_noise','eig_decay','seed','D_eval','pred_mse','pred_mse_neuron','pred_mse_slope','pred_mse_slope_se','pred_mse_slope_neuron',...
+    'Cnoise_used','Cnoise_ex_used','alpha_syn','alpha_ex');
 disp('Finished. Results saved.')
 toc
 end

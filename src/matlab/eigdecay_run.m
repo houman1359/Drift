@@ -1,4 +1,18 @@
-% Sweep input covariance eigenvalue decay to test complexity dependence
+% Eigenspectrum decay sweep (complexity dependence)
+% PARAMETERS (edit here)
+%   n, m                 : input/output dims
+%   outputfolder         : results directory
+%   synnoise, Nparticles : noise std and #particles
+%   eta                  : learning rate / dt
+%   overwrite, npool     : IO and parallelism controls
+%   eig_decays           : vector of power-law exponents (lambda_i ~ i^{-eig_decay})
+%   modes                : {'synaptic','excitability'}
+%   rho_noise            : synaptic equicorr coefficient
+%   Nreps, base_seed     : repeats and base seed
+% Notes:
+%   - To use heterogeneous/custom correlations, also set:
+%       params.noise_corr_mode / params.Cnoise / params.alpha_range
+%       params.excit_corr_mode / params.Cnoise_ex / params.alpha_ex_range
 clear all
 close all
 
