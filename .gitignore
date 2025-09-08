@@ -1,6 +1,8 @@
 # Ignore archives and misc
 _misc/
 
+
+__pycache__
 # Data, results, plots, logs
 
 _results/
