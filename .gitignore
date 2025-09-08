@@ -1,7 +1,42 @@
-# repo ignores
-FromFarhad/Results/
+# Ignore archives and misc
+_misc/
+
+# Data, results, plots, logs
+/data/
+_results/
+results/
+Results/
+plot/
+plots/
+FromFarhad/
 FromFarhad/plot/
 FromFarhad/logs/
-FromFarhad/legacy/
-**/*.asv
-**/*.mat
+FromFarhad/Results/
+
+# Images and figures
+*.png
+*.jpg
+*.jpeg
+*.svg
+*.pdf
+
+# Notebooks
+*.ipynb
+
+# Python cache and build
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.build/
+*.egg-info/
+
+# MATLAB autosave and output
+*.asv
+*.fig
+*.mat
+
+# Editors/OS
+.DS_Store
+.vscode/
+.idea/
